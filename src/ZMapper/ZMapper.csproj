@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Multi-target: net10.0 for modern apps, netstandard2.0 for broad compatibility -->
+    <TargetFrameworks>net10.0;netstandard2.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Produce reference assembly for source generator to consume -->
+    <ProduceReferenceAssembly>true</ProduceReferenceAssembly>
+
+    <!-- NuGet package metadata (single NuGet: runtime library + source generator) -->
+    <PackageId>ZMapper</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>ZCloud</Authors>
+    <Description>High-performance object mapping for .NET. AutoMapper's fluent API + Mapperly's compile-time source generation. Near-zero overhead, compile-time safety, profiles, DI support, hooks, and Span-based batch mapping.</Description>
+    <PackageTags>mapper;mapping;automapper;source-generator;performance</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryType>git</RepositoryType>
+
+    <!-- Suppress NU5128: netstandard2.0 lib has no direct dependencies to declare -->
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+  </PropertyGroup>
+
+  <!-- System.Memory is needed for Span<T>/ReadOnlySpan<T> on netstandard2.0 -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="System.Memory" Version="4.5.5" />
+  </ItemGroup>
+
+  <!-- Pack the source generator DLL into the analyzers folder of the NuGet package.
+       The source generator project must be built BEFORE packing this project.
+       Build order: dotnet build ZMapper.SourceGenerator first, then dotnet pack ZMapper.
+       This avoids circular ProjectReference (SourceGenerator already references ZMapper). -->
+  <ItemGroup>
+    <None Include="..\ZMapper.SourceGenerator\bin\$(Configuration)\netstandard2.0\ZMapper.SourceGenerator.dll"
+          Pack="true"
+          PackagePath="analyzers/dotnet/cs"
+          Visible="false" />
+  </ItemGroup>
+
+</Project>

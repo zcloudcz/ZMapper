@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>ZMapper.SourceGenerator</id>
+    <version>1.0.0</version>
+    <title>ZMapper Source Generator</title>
+    <authors>Your Name</authors>
+    <owners>Your Name</owners>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <license type="expression">MIT</license>
+    <projectUrl>https://github.com/yourusername/ZMapper</projectUrl>
+    <description>Roslyn source generator for ZMapper that generates optimized mapping code at compile-time. Analyzes your mapping configuration and produces efficient, type-safe mapping methods with zero runtime overhead.</description>
+    <releaseNotes>Initial release of ZMapper.SourceGenerator with incremental source generation support.</releaseNotes>
+    <copyright>Copyright 2026</copyright>
+    <tags>mapper source-generator roslyn code-generation performance analyzers</tags>
+    <repository type="git" url="https://github.com/yourusername/ZMapper" />
+    <readme>README.md</readme>
+    <developmentDependency>true</developmentDependency>
+    <dependencies>
+      <group targetFramework="netstandard2.0">
+        <dependency id="ZMapper.Abstractions" version="1.0.0" />
+      </group>
+    </dependencies>
+  </metadata>
+  <files>
+    <file src="bin\Release\netstandard2.0\ZMapper.SourceGenerator.dll" target="analyzers\dotnet\cs\" />
+    <file src="..\..\README.md" target="" />
+  </files>
+</package>

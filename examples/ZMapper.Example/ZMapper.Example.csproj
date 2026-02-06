@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RollForward>LatestMajor</RollForward>
+  </PropertyGroup>
+
+  <!-- ZMapper now includes Abstractions - single reference needed -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ZMapper\ZMapper.csproj" />
+    <ProjectReference Include="..\..\src\ZMapper.SourceGenerator\ZMapper.SourceGenerator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>

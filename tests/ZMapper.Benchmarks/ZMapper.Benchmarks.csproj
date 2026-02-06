@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <!-- Allow rolling forward to newer .NET versions (e.g., .NET 10) if .NET 9 is not installed -->
+    <RollForward>LatestMajor</RollForward>
+    <!-- Emit generated source files for debugging -->
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)\GeneratedFiles</CompilerGeneratedFilesOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.14.0" />
+    <PackageReference Include="AutoMapper" Version="13.0.1" />
+    <PackageReference Include="Riok.Mapperly" Version="3.6.0" />
+  </ItemGroup>
+
+  <!-- ZMapper now includes Abstractions - single reference needed -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ZMapper\ZMapper.csproj" />
+    <ProjectReference Include="..\..\src\ZMapper.SourceGenerator\ZMapper.SourceGenerator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="$(BaseIntermediateOutputPath)\GeneratedFiles" />
+  </ItemGroup>
+
+</Project>

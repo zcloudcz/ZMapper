@@ -1,6 +1,5 @@
 # ZMapper
 
-<div align="center">
 
 **High-Performance Object Mapping for .NET**
 
@@ -12,7 +11,6 @@
 
 [Features](#features) | [Quick Start](#quick-start) | [Profiles & DI](#profiles--dependency-injection) | [Performance](#performance) | [API Reference](#api-reference)
 
-</div>
 
 ---
 

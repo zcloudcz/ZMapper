@@ -26,7 +26,7 @@ var userDto = new UserDto
 var user = mapper.Map<UserDto, User>(userDto);
 
 Console.WriteLine($"Source: {userDto.Id}, {userDto.Username}, {userDto.Email}");
-Console.WriteLine($"Mapped: {user.UserId}, {user.UserName}, {user.EmailAddress}");
+Console.WriteLine($"Mapped: {user.Id}, {user.UserName}, {user.EmailAddress}");
 Console.WriteLine($"Active: {userDto.IsActive} -> {user.Active}");
 Console.WriteLine();
 

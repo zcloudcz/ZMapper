@@ -1,9 +1,22 @@
 namespace ZMapper.Example;
 
-// Source models
-public class UserDto
+public abstract class BaseEntity
 {
     public int Id { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
+public abstract class BaseModel
+{
+    public int Id { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
+// Source models
+public class UserDto : BaseModel
+{
     public required string Username { get; set; }
     public required string Email { get; set; }
     public string? FirstName { get; set; }
@@ -12,7 +25,7 @@ public class UserDto
     public bool IsActive { get; set; }
 }
 
-public class AddressDto
+public class AddressDto : BaseModel
 {
     public required string Street { get; set; }
     public required string City { get; set; }
@@ -21,9 +34,8 @@ public class AddressDto
 }
 
 // Destination models
-public class User
+public class User : BaseEntity
 {
-    public int UserId { get; set; }
     public string UserName { get; set; } = "";
     public string EmailAddress { get; set; } = "";
     public string? FullName { get; set; }
@@ -31,7 +43,7 @@ public class User
     public bool Active { get; set; }
 }
 
-public class Address
+public class Address : BaseEntity
 {
     public string StreetAddress { get; set; } = "";
     public string City { get; set; } = "";
@@ -40,7 +52,7 @@ public class Address
 }
 
 // Complex nested model
-public class CustomerDto
+public class CustomerDto : BaseModel
 {
     public required string CustomerName { get; set; }
     public required string Email { get; set; }
@@ -48,7 +60,7 @@ public class CustomerDto
     public List<string> Tags { get; set; } = new();
 }
 
-public class Customer
+public class Customer : BaseEntity
 {
     public string Name { get; set; } = "";
     public string ContactEmail { get; set; } = "";

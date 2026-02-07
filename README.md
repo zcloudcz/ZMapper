@@ -19,6 +19,9 @@
 - **Near-Zero Overhead** - Source-generated code runs as fast as hand-written mapping (~17 ns per object)
 - **Familiar API** - AutoMapper-style fluent configuration (`CreateMap`, `ForMember`, `MapFrom`)
 - **Compile-Time Safety** - All mapping code generated at build time, no runtime reflection
+- **Inheritance Support** - Base class properties (e.g. `Id`, `CreatedAt` from `BaseEntity`) are mapped automatically through the full inheritance chain
+- **Complex MapFrom Expressions** - Navigation properties (`src.Client.Name`), null-coalescing (`src.Date ?? fallback`), and arbitrary expressions
+- **Nullable Type Handling** - Safe mapping from `DateTime?` to `DateTime` (and other nullable value types) with automatic `?? default`
 - **Profiles** - Organize mappings into reusable `IMapperProfile` classes (like AutoMapper profiles)
 - **Dependency Injection** - Auto-generated `AddZMapper()` extension for `IServiceCollection`
 - **Hooks** - `BeforeMap` and `AfterMap` callbacks for custom pre/post-processing logic
@@ -27,6 +30,7 @@
 - **Nested Objects** - Full support for deep object graphs (any nesting depth)
 - **Collections** - High-performance batch mapping with `ReadOnlySpan<T>`, arrays, lists, and `IEnumerable<T>`
 - **Extension Methods** - Auto-generated `.ToXxx()` extension methods for zero-ceremony mapping
+- **Unmapped Property Detection** - Compile-time ZMAP001 warning for destination properties with no matching source
 - **Modern C#** - `init`, `required`, nullable reference types, records, enums, `DateOnly`, `Guid`, etc.
 
 ## Quick Start
@@ -284,6 +288,18 @@ config.CreateMap<OrderDto, Order>()
                opt => opt.MapFrom(src => src.Items.Sum(i => i.Price)));
 ```
 
+ZMapper supports complex MapFrom expressions, including navigation properties and null-coalescing:
+
+```csharp
+config.CreateMap<InvoiceEntity, InvoiceDto>()
+    // Navigation property flattening: src.Client.CompanyName -> dest.ClientName
+    .ForMember(dest => dest.ClientName,
+               opt => opt.MapFrom(src => src.Client != null ? src.Client.CompanyName : ""))
+    // Null-coalescing for nullable value types
+    .ForMember(dest => dest.IssueDate,
+               opt => opt.MapFrom(src => src.IssueDate ?? DateTime.UtcNow));
+```
+
 ### Ignore - Skip Properties
 
 Prevent specific properties from being mapped:
@@ -324,6 +340,47 @@ config.CreateMap<InvoiceDto, Invoice>()
     .IgnoreNonExisting() // CreatedAt, ProcessedBy are set by hooks below
     .BeforeMap((src, dest) => dest.CreatedAt = DateTime.UtcNow)
     .AfterMap((src, dest) => dest.ProcessedBy = "ZMapper");
+```
+
+### Inheritance - Base Class Properties
+
+ZMapper automatically maps properties from the entire inheritance chain. No extra configuration needed:
+
+```csharp
+public abstract class BaseEntity
+{
+    public int Id { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
+public class Product : BaseEntity
+{
+    public string Name { get; set; }
+    public decimal Price { get; set; }
+}
+
+public class ProductDto : BaseDto
+{
+    public string Name { get; set; }
+    public decimal Price { get; set; }
+}
+
+// Id, CreatedAt, UpdatedAt from BaseEntity/BaseDto are mapped automatically
+config.CreateMap<ProductDto, Product>();
+```
+
+This works with any inheritance depth (e.g. `BaseEntity` -> `AuditableEntity` -> `Product`). If a derived class hides a base property with `new`, the derived version takes precedence.
+
+### Nullable Value Types
+
+When the source has nullable value types (`DateTime?`, `int?`) and the destination has non-nullable types, ZMapper safely maps using `?? default`:
+
+```csharp
+// Source: DateTime? IssueDate -> Destination: DateTime IssueDate
+// Generated: destination.IssueDate = source.IssueDate ?? default;
+// If source is null, destination gets default(DateTime)
+config.CreateMap<NullableSource, NonNullableDestination>();
 ```
 
 ### When - Conditional Mapping
@@ -449,8 +506,9 @@ ZMapper handles all common .NET types out of the box:
 | Date/Time | `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`, `TimeSpan` |
 | Identifiers | `Guid`, `Uri` |
 | Enums | All enum types (mapped by value) |
-| Nullable | `int?`, `DateTime?`, `MyEnum?`, etc. |
+| Nullable | `int?`, `DateTime?`, `MyEnum?`, etc. (auto-handled with `?? default`) |
 | Collections | `List<T>`, `T[]`, `IReadOnlyList<T>`, `IEnumerable<T>` |
+| Inheritance | Properties from base classes (abstract/concrete, any depth) |
 | Modern C# | `init` setters, `required` properties, records |
 
 ## Architecture
@@ -534,7 +592,36 @@ public static IServiceCollection AddZMapper(this IServiceCollection services)
 }
 ```
 
-Inspect generated code by adding to your `.csproj`:
+## Troubleshooting
+
+### Required `using` Statements
+
+Both namespaces are needed when using profiles:
+
+```csharp
+using ZMapper;                              // MapperConfiguration
+using ZMapper.Abstractions.Configuration;   // IMapperProfile
+```
+
+### Generated Code Namespace
+
+The source generator emits extension methods and the `Mapper` class into the **same namespace as your profile/config classes**. If your profiles are in `MyApp.Mapping`, consumers need:
+
+```csharp
+using MyApp.Mapping; // for .ToXxx() extensions and AddZMapper()
+```
+
+### Profile Classes Must Be `partial`
+
+The source generator creates a partial counterpart. Missing `partial` causes CS0260:
+
+```csharp
+public partial class UserProfile : IMapperProfile  // ✅ partial required
+```
+
+### Inspecting Generated Code
+
+To see what the source generator produces, add to your `.csproj`:
 
 ```xml
 <PropertyGroup>
@@ -547,6 +634,8 @@ Inspect generated code by adding to your `.csproj`:
 </ItemGroup>
 ```
 
+> **Important:** If you later remove `EmitCompilerGeneratedFiles`, delete the `Generated/` folder manually to avoid CS0101 duplicate definition errors.
+
 ## Project Structure
 
 ```
@@ -555,7 +644,7 @@ ZMapper/
     ZMapper/                  # Core library + interfaces (IMapper, IMapperProfile, etc.)
     ZMapper.SourceGenerator/  # Roslyn source generator
   tests/
-    ZMapper.Tests/            # Unit tests (126 tests)
+    ZMapper.Tests/            # Unit tests (138 tests)
     ZMapper.Benchmarks/       # BenchmarkDotNet suite
   examples/
     ZMapper.Example/          # Working example project (Profile pattern)

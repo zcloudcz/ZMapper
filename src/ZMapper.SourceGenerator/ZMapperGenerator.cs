@@ -575,8 +575,30 @@ public class ZMapperGenerator : IIncrementalGenerator
     /// </summary>
     private static List<PropertyModel> GetProperties(ITypeSymbol type)
     {
-        return type.GetMembers() // Get all members (methods, properties, fields, etc.)
-            .OfType<IPropertySymbol>() // Filter to just properties
+        // Walk the entire inheritance chain to collect properties from base classes too.
+        // type.GetMembers() only returns DECLARED members on that specific type,
+        // so we must traverse BaseType to include inherited properties (e.g. Id from BaseEntity).
+        // We use a dictionary keyed by property name so that if a derived class re-declares
+        // a property (using 'new'), the derived version wins (it's added first).
+        var propertyMap = new Dictionary<string, IPropertySymbol>();
+        var current = type;
+
+        while (current != null)
+        {
+            foreach (var prop in current.GetMembers().OfType<IPropertySymbol>())
+            {
+                // Only take the first occurrence (most derived) of each property name
+                if (!propertyMap.ContainsKey(prop.Name))
+                {
+                    propertyMap[prop.Name] = prop;
+                }
+            }
+
+            // Move up to the parent class (null when we reach System.Object)
+            current = current.BaseType;
+        }
+
+        return propertyMap.Values
             .Where(p =>
                 // Must be public (we can't set private properties)
                 p.DeclaredAccessibility == Accessibility.Public &&
@@ -853,14 +875,28 @@ public class ZMapperGenerator : IIncrementalGenerator
                 else if (mae.Name.Identifier.Text == "MapFrom")
                 {
                     // opt.MapFrom(src => src.OtherProperty)
-                    // Extract which source property to map from
+                    // opt.MapFrom(src => src.Client.CompanyName)     -- navigation property
+                    // opt.MapFrom(src => src.IssueDate ?? DateTime.UtcNow)  -- complex expression
                     if (inv.ArgumentList.Arguments.Count > 0)
                     {
                         var arg = inv.ArgumentList.Arguments[0].Expression;
                         if (arg is SimpleLambdaExpressionSyntax sourceLambda)
                         {
-                            // Extract the property name from: src => src.PropertyName
-                            config.SourceMember = ExtractMemberNameFromLambda(sourceLambda);
+                            // Try simple property name first (src => src.PropertyName)
+                            var simpleName = ExtractMemberNameFromLambda(sourceLambda);
+                            if (simpleName != null)
+                            {
+                                config.SourceMember = simpleName;
+                            }
+                            else
+                            {
+                                // Complex expression: store the full lambda body with
+                                // the parameter name replaced by "source" so it works
+                                // in the generated code context.
+                                var parameterName = sourceLambda.Parameter.Identifier.Text;
+                                var expressionBody = sourceLambda.Body.ToString();
+                                config.SourceExpression = expressionBody.Replace(parameterName + ".", "source.");
+                            }
                         }
                     }
                 }
@@ -1080,6 +1116,7 @@ public class ZMapperGenerator : IIncrementalGenerator
         sb.AppendLine("using System;");
         sb.AppendLine("using System.Collections.Generic;");
         sb.AppendLine("using System.Linq;");
+        sb.AppendLine("using ZMapper;");
         sb.AppendLine("using ZMapper.Abstractions;");
         sb.AppendLine();
 
@@ -1247,6 +1284,14 @@ public class ZMapperGenerator : IIncrementalGenerator
             indent += "    "; // Add extra indent for code inside if
         }
 
+        // CASE 0: Complex MapFrom expression (e.g., src => src.Client.CompanyName or src => src.Date ?? DateTime.UtcNow)
+        // When the user provides a full expression in MapFrom, we emit it directly as the right-hand side.
+        if (!string.IsNullOrEmpty(memberConfig?.SourceExpression))
+        {
+            sb.AppendLine($"{indent}destination.{destProp.Name} = {memberConfig!.SourceExpression};");
+            return;
+        }
+
         // CASE 1: Collection of complex objects
         // Example: List<CustomerDto> -> List<Customer>
         // Generated: destination.Customers = source.Customers?.Select(item => item.ToCustomer()).ToList();
@@ -1288,8 +1333,16 @@ public class ZMapperGenerator : IIncrementalGenerator
         }
 
         // CASE 3: Simple property (int, string, DateTime, etc.)
-        // Generated: destination.Name = source.Name;
-        sb.AppendLine($"{indent}destination.{destProp.Name} = source.{sourceProp.Name};");
+        // When source is nullable value type (e.g. DateTime?) and destination is non-nullable (DateTime),
+        // we must use ?? default to avoid CS0266 compile error. For reference types this is harmless.
+        if (sourceProp.IsNullable && !destProp.IsNullable)
+        {
+            sb.AppendLine($"{indent}destination.{destProp.Name} = source.{sourceProp.Name} ?? default;");
+        }
+        else
+        {
+            sb.AppendLine($"{indent}destination.{destProp.Name} = source.{sourceProp.Name};");
+        }
     }
 
     /// <summary>
@@ -1312,6 +1365,13 @@ public class ZMapperGenerator : IIncrementalGenerator
         {
             sb.AppendLine($"{indent}if ({memberConfig!.Condition})");
             indent += "    ";
+        }
+
+        // CASE 0: Complex MapFrom expression (e.g., src => src.Client.CompanyName)
+        if (!string.IsNullOrEmpty(memberConfig?.SourceExpression))
+        {
+            sb.AppendLine($"{indent}destination.{destProp.Name} = {memberConfig!.SourceExpression};");
+            return;
         }
 
         // CASE 1: Collection of complex objects
@@ -1348,7 +1408,16 @@ public class ZMapperGenerator : IIncrementalGenerator
         }
 
         // CASE 3: Simple property
-        sb.AppendLine($"{indent}destination.{destProp.Name} = source.{sourceProp.Name};");
+        // When source is nullable value type (e.g. DateTime?) and destination is non-nullable (DateTime),
+        // we must use ?? default to avoid CS0266 compile error.
+        if (sourceProp.IsNullable && !destProp.IsNullable)
+        {
+            sb.AppendLine($"{indent}destination.{destProp.Name} = source.{sourceProp.Name} ?? default;");
+        }
+        else
+        {
+            sb.AppendLine($"{indent}destination.{destProp.Name} = source.{sourceProp.Name};");
+        }
     }
 
     /// <summary>
@@ -1396,7 +1465,12 @@ public class ZMapperGenerator : IIncrementalGenerator
                 var sourcePropName = memberConfig?.SourceMember ?? destProp.Name;
                 var sourceProp = mapping.SourceProperties.FirstOrDefault(p => p.Name == sourcePropName);
 
-                if (sourceProp != null)
+                // Complex MapFrom expression takes precedence over simple property mapping
+                if (!string.IsNullOrEmpty(memberConfig?.SourceExpression))
+                {
+                    propsToInitialize.Add($"                {destProp.Name} = {memberConfig!.SourceExpression}");
+                }
+                else if (sourceProp != null)
                 {
                     propsToInitialize.Add($"                {destProp.Name} = source.{sourceProp.Name}");
                 }
@@ -1431,9 +1505,10 @@ public class ZMapperGenerator : IIncrementalGenerator
                 var sourcePropName = memberConfig?.SourceMember ?? destProp.Name;
                 var sourceProp = mapping.SourceProperties.FirstOrDefault(p => p.Name == sourcePropName);
 
-                if (sourceProp != null)
+                // Generate assignment if we have a matching source property OR a complex expression
+                if (sourceProp != null || !string.IsNullOrEmpty(memberConfig?.SourceExpression))
                 {
-                    GeneratePropertyAssignment(sb, destProp, sourceProp, memberConfig);
+                    GeneratePropertyAssignment(sb, destProp, sourceProp!, memberConfig);
                 }
             }
         }
@@ -1474,9 +1549,9 @@ public class ZMapperGenerator : IIncrementalGenerator
             var sourcePropName = memberConfig?.SourceMember ?? destProp.Name;
             var sourceProp = mapping.SourceProperties.FirstOrDefault(p => p.Name == sourcePropName);
 
-            if (sourceProp != null)
+            if (sourceProp != null || !string.IsNullOrEmpty(memberConfig?.SourceExpression))
             {
-                GeneratePropertyAssignment(sb, destProp, sourceProp, memberConfig);
+                GeneratePropertyAssignment(sb, destProp, sourceProp!, memberConfig);
             }
         }
 
@@ -1726,7 +1801,12 @@ public class ZMapperGenerator : IIncrementalGenerator
                     var sourcePropName = memberConfig?.SourceMember ?? destProp.Name;
                     var sourceProp = mapping.SourceProperties.FirstOrDefault(p => p.Name == sourcePropName);
 
-                    if (sourceProp != null)
+                    // Complex MapFrom expression takes precedence over simple property mapping
+                    if (!string.IsNullOrEmpty(memberConfig?.SourceExpression))
+                    {
+                        propsToInitialize.Add($"            {destProp.Name} = {memberConfig!.SourceExpression}");
+                    }
+                    else if (sourceProp != null)
                     {
                         propsToInitialize.Add($"            {destProp.Name} = source.{sourceProp.Name}");
                     }
@@ -1757,9 +1837,9 @@ public class ZMapperGenerator : IIncrementalGenerator
                     var sourcePropName = memberConfig?.SourceMember ?? destProp.Name;
                     var sourceProp = mapping.SourceProperties.FirstOrDefault(p => p.Name == sourcePropName);
 
-                    if (sourceProp != null)
+                    if (sourceProp != null || !string.IsNullOrEmpty(memberConfig?.SourceExpression))
                     {
-                        GeneratePropertyAssignmentForExtension(sb, destProp, sourceProp, memberConfig, mapping);
+                        GeneratePropertyAssignmentForExtension(sb, destProp, sourceProp!, memberConfig, mapping);
                     }
                 }
 
@@ -1797,6 +1877,7 @@ public class ZMapperGenerator : IIncrementalGenerator
         sb.AppendLine("using System;");
         sb.AppendLine("using System.Collections.Generic;");
         sb.AppendLine("using System.Linq;");
+        sb.AppendLine("using ZMapper;");
         sb.AppendLine("using ZMapper.Abstractions;");
         sb.AppendLine();
         sb.AppendLine($"namespace {ns};");
@@ -2094,6 +2175,13 @@ internal class MemberConfigModel
 
     /// <summary>Which source property to map from (e.g., "Id"), or null if convention</summary>
     public string? SourceMember { get; set; }
+
+    /// <summary>
+    /// Full source expression for complex MapFrom lambdas (e.g., "source.Client.CompanyName"
+    /// or "source.IssueDate ?? DateTime.UtcNow"). Used when the lambda body is not a simple
+    /// property access. When set, this takes precedence over SourceMember.
+    /// </summary>
+    public string? SourceExpression { get; set; }
 
     /// <summary>Should this property be ignored (not mapped)?</summary>
     public bool IsIgnored { get; set; }

@@ -12,7 +12,7 @@ public class UserMappingProfile : IMapperProfile
     {
         // Simple mapping with property name differences
         config.CreateMap<UserDto, User>()
-            .ForMember(dest => dest.UserId, opt => opt.MapFrom(src => src.Id))
+            .ForMember(dest => dest.Id, opt => opt.MapFrom(src => src.Id))
             .ForMember(dest => dest.UserName, opt => opt.MapFrom(src => src.Username))
             .ForMember(dest => dest.EmailAddress, opt => opt.MapFrom(src => src.Email))
             .ForMember(dest => dest.RegisteredDate, opt => opt.MapFrom(src => src.CreatedAt))

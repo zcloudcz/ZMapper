@@ -9,22 +9,65 @@
     <!-- Produce reference assembly for source generator to consume -->
     <ProduceReferenceAssembly>true</ProduceReferenceAssembly>
 
-    <!-- NuGet package metadata (single NuGet: runtime library + source generator) -->
+    <!-- ========== NuGet package metadata (best practices: https://learn.microsoft.com/nuget/create-packages/package-authoring-best-practices) ========== -->
+
+    <!-- Unique package identifier on NuGet.org -->
     <PackageId>ZMapper</PackageId>
+    <!-- Human-readable title displayed on NuGet.org -->
+    <Title>ZMapper</Title>
+    <!-- SemVer version: Major.Minor.Patch[-prerelease] -->
     <Version>1.0.0</Version>
-    <Authors>ZCloud</Authors>
+    <!-- Friendly author name(s) displayed on NuGet.org -->
+    <Authors>Martin Zahálka</Authors>
+    <!-- Copyright notice with year and owner -->
+    <Copyright>Copyright (c) Martin Zahálka 2026</Copyright>
+    <!-- Package description (up to 4000 chars) - most visible field in NuGet search -->
     <Description>High-performance object mapping for .NET. AutoMapper's fluent API + Mapperly's compile-time source generation. Near-zero overhead, compile-time safety, profiles, DI support, hooks, and Span-based batch mapping.</Description>
-    <PackageTags>mapper;mapping;automapper;source-generator;performance</PackageTags>
+    <!-- Space-delimited tags for NuGet.org search discoverability -->
+    <PackageTags>mapper mapping object-mapping automapper mapperly source-generator fluent-api performance zero-allocation</PackageTags>
+    <!-- SPDX license expression (preferred over deprecated LicenseUrl) -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <!-- Project homepage / documentation URL -->
+    <PackageProjectUrl>https://github.com/zcloudcz/ZMapper</PackageProjectUrl>
+    <!-- Source control repository metadata -->
+    <RepositoryUrl>https://github.com/zcloudcz/ZMapper</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <!-- README file included in the NuGet package (displayed on NuGet.org) -->
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <!-- Release notes documenting breaking changes, new features, and bug fixes -->
+    <PackageReleaseNotes>v1.0.0 - Initial release with fluent configuration API, compile-time source generation, hooks (BeforeMap/AfterMap), Span-based batch mapping, and DI support.</PackageReleaseNotes>
+    <!-- Require license acceptance before install (set true if needed) -->
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+
+    <!-- ========== Build quality settings ========== -->
+
+    <!-- Deterministic builds: same source produces identical binaries (CI reproducibility) -->
+    <Deterministic>true</Deterministic>
+    <!-- Embed source files into PDB for SourceLink debugging -->
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <!-- Include symbol package (.snupkg) for debugging support on NuGet.org symbol server -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
 
     <!-- Suppress NU5128: netstandard2.0 lib has no direct dependencies to declare -->
     <NoWarn>$(NoWarn);NU5128</NoWarn>
   </PropertyGroup>
 
+  <!-- SourceLink: enables stepping into library source code during debugging.
+       Automatically populates RepositoryUrl, RepositoryType, and commit metadata. -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="all" />
+  </ItemGroup>
+
   <!-- System.Memory is needed for Span<T>/ReadOnlySpan<T> on netstandard2.0 -->
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
     <PackageReference Include="System.Memory" Version="4.5.5" />
+  </ItemGroup>
+
+  <!-- Include README.md and LICENSE in the NuGet package root (displayed on NuGet.org) -->
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="\" />
   </ItemGroup>
 
   <!-- Pack the source generator DLL into the analyzers folder of the NuGet package.

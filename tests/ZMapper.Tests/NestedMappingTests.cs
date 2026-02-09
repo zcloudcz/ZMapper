@@ -1,6 +1,5 @@
-using FluentAssertions;
+﻿using FluentAssertions;
 using Xunit;
-using ZMapper.Abstractions;
 
 namespace ZMapper.Tests;
 
@@ -146,7 +145,7 @@ public class NestedMappingTests
     [Fact]
     public void Should_Map_Two_Levels_Deep()
     {
-        // Arrange - Order → Customer → Address (2 levels of nesting)
+        // Arrange - Order â†’ Customer â†’ Address (2 levels of nesting)
         var dto = new NOrderDto
         {
             OrderId = 100,

@@ -1,5 +1,4 @@
-using FluentAssertions;
-using ZMapper.Abstractions;
+﻿using FluentAssertions;
 using Xunit;
 
 namespace ZMapper.Tests;
@@ -142,7 +141,7 @@ public class EdgeCaseTests
         var source = new EdgeSource
         {
             IntValue = 1,
-            StringValue = "Hello 世界 🌍 Здравствуй مرحبا",
+            StringValue = "Hello ä¸–ç•Ś đźŚŤ Đ—Đ´Ń€Đ°Đ˛ŃŃ‚Đ˛ŃĐą Ů…Ř±Ř­Ř¨Ř§",
             DecimalValue = 1.0m
         };
 
@@ -150,7 +149,7 @@ public class EdgeCaseTests
         var dest = _mapper.Map<EdgeSource, EdgeDestination>(source);
 
         // Assert
-        dest.StringValue.Should().Be("Hello 世界 🌍 Здравствуй مرحبا");
+        dest.StringValue.Should().Be("Hello ä¸–ç•Ś đźŚŤ Đ—Đ´Ń€Đ°Đ˛ŃŃ‚Đ˛ŃĐą Ů…Ř±Ř­Ř¨Ř§");
     }
 
     [Fact]

@@ -1,6 +1,5 @@
-using System.Globalization;
+﻿using System.Globalization;
 using FluentAssertions;
-using ZMapper.Abstractions;
 using ZMapper.Tests.Model;
 using Xunit;
 
@@ -364,7 +363,7 @@ public class ComplexHooksTests
         // AfterMap computed DisplayName from mapped properties
         result.DisplayName.Should().Be("Novak, Jan");
 
-        // AfterMap computed LoyaltyTier (750 points → Silver)
+        // AfterMap computed LoyaltyTier (750 points â†’ Silver)
         result.LoyaltyTier.Should().Be("Silver");
 
         // Standard mapping still works

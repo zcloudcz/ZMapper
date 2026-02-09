@@ -1,4 +1,4 @@
-namespace ZMapper.Abstractions.Configuration;
+namespace ZMapper;
 
 /// <summary>
 /// Interface for mapper configuration

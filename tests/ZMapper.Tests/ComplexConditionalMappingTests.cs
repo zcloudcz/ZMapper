@@ -1,5 +1,4 @@
-using FluentAssertions;
-using ZMapper.Abstractions;
+﻿using FluentAssertions;
 using ZMapper.Tests.Model;
 using Xunit;
 
@@ -219,11 +218,11 @@ public class ComplexConditionalMappingTests
             FirstName = "John",
             LastName = "Doe",
             Email = "john@example.com",
-            Phone = "+420123456789",       // Not empty → mapped
-            Gender = Gender.Male,          // HasValue → mapped
-            LoyaltyPoints = 500,           // > 0 → mapped
+            Phone = "+420123456789",       // Not empty â†’ mapped
+            Gender = Gender.Male,          // HasValue â†’ mapped
+            LoyaltyPoints = 500,           // > 0 â†’ mapped
             CreditLimit = 10000m,
-            IsActive = true,               // Active → CreditLimit mapped
+            IsActive = true,               // Active â†’ CreditLimit mapped
             BillingAddress = new ConditionalAddressDto { City = "Prague" }
         };
 
@@ -247,11 +246,11 @@ public class ComplexConditionalMappingTests
             FirstName = "Jane",
             LastName = "Smith",
             Email = "jane@example.com",
-            Phone = null,                  // Null → NOT mapped
-            Gender = null,                 // No value → NOT mapped
-            LoyaltyPoints = 0,             // Not > 0 → NOT mapped
+            Phone = null,                  // Null â†’ NOT mapped
+            Gender = null,                 // No value â†’ NOT mapped
+            LoyaltyPoints = 0,             // Not > 0 â†’ NOT mapped
             CreditLimit = 5000m,
-            IsActive = false,              // Inactive → CreditLimit NOT mapped
+            IsActive = false,              // Inactive â†’ CreditLimit NOT mapped
         };
 
         // Act
@@ -279,7 +278,7 @@ public class ComplexConditionalMappingTests
             FirstName = "Bob",
             LastName = "Wilson",
             Email = "bob@example.com",
-            Phone = "",                    // Empty → NOT mapped
+            Phone = "",                    // Empty â†’ NOT mapped
             IsActive = true,
             LoyaltyPoints = 100,
             Gender = Gender.Other
@@ -304,7 +303,7 @@ public class ComplexConditionalMappingTests
             FirstName = "Alice",
             LastName = "Johnson",
             Email = "alice@example.com",
-            Gender = null,      // Nullable enum without value → NOT mapped
+            Gender = null,      // Nullable enum without value â†’ NOT mapped
             IsActive = true,
             LoyaltyPoints = 1
         };
@@ -327,7 +326,7 @@ public class ComplexConditionalMappingTests
             FirstName = "Inactive",
             LastName = "User",
             Email = "inactive@example.com",
-            IsActive = false,              // Inactive → CreditLimit stays at sentinel
+            IsActive = false,              // Inactive â†’ CreditLimit stays at sentinel
             CreditLimit = 99999m,
             LoyaltyPoints = 1
         };
@@ -353,7 +352,7 @@ public class ComplexConditionalMappingTests
             ProductCode = "WDG-001",
             Quantity = 5,
             UnitPrice = 25.00m,
-            Discount = 10.00m,  // HasValue && > 0 → mapped
+            Discount = 10.00m,  // HasValue && > 0 â†’ mapped
             IsGift = false
         };
 
@@ -377,7 +376,7 @@ public class ComplexConditionalMappingTests
             ProductCode = "GDG-002",
             Quantity = 1,
             UnitPrice = 100.00m,
-            Discount = null,    // No value → NOT mapped
+            Discount = null,    // No value â†’ NOT mapped
             IsGift = true
         };
 
@@ -399,7 +398,7 @@ public class ComplexConditionalMappingTests
             ProductName = "NoDiscount",
             Quantity = 2,
             UnitPrice = 50.00m,
-            Discount = 0m,       // HasValue but NOT > 0 → NOT mapped
+            Discount = 0m,       // HasValue but NOT > 0 â†’ NOT mapped
         };
 
         // Act
@@ -417,7 +416,7 @@ public class ComplexConditionalMappingTests
         {
             Id = 4,
             ProductName = "Unnamed Product",
-            ProductCode = null,    // Null → NOT mapped
+            ProductCode = null,    // Null â†’ NOT mapped
             Quantity = 1,
             UnitPrice = 10.00m,
             Discount = 5.00m
@@ -445,8 +444,8 @@ public class ComplexConditionalMappingTests
             TotalAmount = 500.00m,
             ShippingCost = 15.99m,
             PaymentMethod = PaymentMethod.CreditCard,
-            IsPaid = true,                         // Paid → ShippingCost mapped
-            TrackingNumber = "TRACK-123-ABC",      // Not empty → mapped
+            IsPaid = true,                         // Paid â†’ ShippingCost mapped
+            TrackingNumber = "TRACK-123-ABC",      // Not empty â†’ mapped
         };
 
         // Act
@@ -470,7 +469,7 @@ public class ComplexConditionalMappingTests
             OrderedAt = DateTime.UtcNow,
             TotalAmount = 200.00m,
             ShippingCost = 9.99m,
-            IsPaid = false,                        // Unpaid → ShippingCost NOT mapped
+            IsPaid = false,                        // Unpaid â†’ ShippingCost NOT mapped
             TrackingNumber = "TRACK-456",
         };
 
@@ -494,7 +493,7 @@ public class ComplexConditionalMappingTests
             OrderedAt = DateTime.UtcNow,
             TotalAmount = 100.00m,
             IsPaid = true,
-            TrackingNumber = null,                  // Null → NOT mapped
+            TrackingNumber = null,                  // Null â†’ NOT mapped
         };
 
         // Act
@@ -516,7 +515,7 @@ public class ComplexConditionalMappingTests
             OrderedAt = DateTime.UtcNow,
             TotalAmount = 75.00m,
             IsPaid = true,
-            TrackingNumber = "",                    // Empty → NOT mapped
+            TrackingNumber = "",                    // Empty â†’ NOT mapped
         };
 
         // Act
@@ -538,8 +537,8 @@ public class ComplexConditionalMappingTests
             TotalAmount = 999.99m,
             ShippingCost = 25.00m,
             PaymentMethod = PaymentMethod.PayPal,
-            IsPaid = false,                        // Unpaid → ShippingCost NOT mapped
-            TrackingNumber = null,                 // Null → NOT mapped
+            IsPaid = false,                        // Unpaid â†’ ShippingCost NOT mapped
+            TrackingNumber = null,                 // Null â†’ NOT mapped
         };
 
         // Act
@@ -566,7 +565,7 @@ public class ComplexConditionalMappingTests
             ProductName = "Surcharge Item",
             Quantity = 1,
             UnitPrice = 100.00m,
-            Discount = -5.00m,     // Negative → fails > 0 condition
+            Discount = -5.00m,     // Negative â†’ fails > 0 condition
         };
 
         // Act
@@ -595,15 +594,15 @@ public class ComplexConditionalMappingTests
         // Assert
         results.Should().HaveCount(3);
 
-        // Item 1: discount > 0 and ProductCode not null → both mapped
+        // Item 1: discount > 0 and ProductCode not null â†’ both mapped
         results[0].Discount.Should().Be(5m);
         results[0].ProductCode.Should().Be("A-1");
 
-        // Item 2: discount null and ProductCode null → neither mapped
+        // Item 2: discount null and ProductCode null â†’ neither mapped
         results[1].Discount.Should().Be(-1m);
         results[1].ProductCode.Should().BeNull();
 
-        // Item 3: discount = 0 (fails > 0) but ProductCode not null → only code mapped
+        // Item 3: discount = 0 (fails > 0) but ProductCode not null â†’ only code mapped
         results[2].Discount.Should().Be(-1m);
         results[2].ProductCode.Should().Be("C-3");
     }

@@ -1,16 +1,15 @@
-using ZMapper.Abstractions;
-
+﻿
 namespace ZMapper.Benchmarks;
 
 /// <summary>
 /// ZMapper configuration for all benchmark mappings.
-/// Registers both simple (PersonDto→Person) and complex (Order/Customer) mappings.
+/// Registers both simple (PersonDtoâ†’Person) and complex (Order/Customer) mappings.
 /// The source generator will produce optimized mapping code at compile time.
 /// </summary>
 public partial class ZMapperConfig
 {
     /// <summary>
-    /// Creates mapper for simple flat object benchmarks (PersonDto → Person).
+    /// Creates mapper for simple flat object benchmarks (PersonDto â†’ Person).
     /// </summary>
     public static IMapper CreateMapper()
     {

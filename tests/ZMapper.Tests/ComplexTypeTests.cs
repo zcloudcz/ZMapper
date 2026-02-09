@@ -1,5 +1,4 @@
 ﻿using FluentAssertions;
-using ZMapper.Abstractions;
 using ZMapper.Tests.Model;
 using Xunit;
 

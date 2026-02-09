@@ -1,4 +1,4 @@
-namespace ZMapper.Abstractions;
+namespace ZMapper;
 
 /// <summary>
 /// Interface for custom type converters

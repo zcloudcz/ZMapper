@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace ZMapper.Abstractions;
+namespace ZMapper;
 
 /// <summary>
 /// Main interface for object mapping.

@@ -10,8 +10,8 @@ namespace ZMapper.Benchmarks;
 public partial class MapperBenchmark
 {
     private PersonDto _source = null!;
-    private IMapper _autoMapper = null!;
-    private ZMapper.Abstractions.IMapper _zMapper = null!;
+    private AutoMapper.IMapper _autoMapper = null!;
+    private ZMapper.IMapper _zMapper = null!;
     private MapperlyMapper _mapperlyMapper = null!;
 
     [GlobalSetup]

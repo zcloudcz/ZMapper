@@ -1,6 +1,6 @@
 using System;
 
-namespace ZMapper.Abstractions.Attributes;
+namespace ZMapper;
 
 /// <summary>
 /// Marks a class as mapper configuration for source generation

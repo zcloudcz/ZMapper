@@ -339,7 +339,8 @@ public class ZMapperGenerator : IIncrementalGenerator
 
         return classSymbol.AllInterfaces.Any(i =>
             i.Name == "IMapperProfile" &&
-            i.ContainingNamespace.ToDisplayString() == "ZMapper.Abstractions.Configuration");
+            (i.ContainingNamespace.ToDisplayString() == "ZMapper" ||
+             i.ContainingNamespace.ToDisplayString() == "ZMapper.Abstractions.Configuration"));
     }
 
     // ============================================================================
@@ -399,8 +400,9 @@ public class ZMapperGenerator : IIncrementalGenerator
             DestinationTypeName = destType.Name,
 
             // Get all public properties from both types
-            SourceProperties = GetProperties(sourceType),
-            DestinationProperties = GetProperties(destType),
+            // Source needs readable props (getter), destination needs writable props (setter)
+            SourceProperties = GetProperties(sourceType, isSource: true),
+            DestinationProperties = GetProperties(destType, isSource: false),
 
             // Extract any ForMember configurations
             MemberConfigurations = ExtractMemberConfigurations(call, semanticModel)
@@ -573,7 +575,13 @@ public class ZMapperGenerator : IIncrementalGenerator
     /// For beginners: This makes a list of all the "fields" on a class that we can fill in,
     /// like listing all the blank spaces in a form.
     /// </summary>
-    private static List<PropertyModel> GetProperties(ITypeSymbol type)
+    /// <summary>
+    /// Collects all public instance properties from a type, walking the full inheritance chain.
+    /// <paramref name="isSource"/> controls the filter:
+    ///   - Source properties need a GETTER (we read from them, e.g. computed TotalPrice)
+    ///   - Destination properties need a SETTER or be required (we write to them)
+    /// </summary>
+    private static List<PropertyModel> GetProperties(ITypeSymbol type, bool isSource)
     {
         // Walk the entire inheritance chain to collect properties from base classes too.
         // type.GetMembers() only returns DECLARED members on that specific type,
@@ -600,15 +608,17 @@ public class ZMapperGenerator : IIncrementalGenerator
 
         return propertyMap.Values
             .Where(p =>
-                // Must be public (we can't set private properties)
+                // Must be public (we can't access private properties from generated code)
                 p.DeclaredAccessibility == Accessibility.Public &&
 
                 // Must not be static (static properties belong to the class, not instances)
                 !p.IsStatic &&
 
-                // Must be settable OR required
-                // Settable means: has a set method OR is required (required forces initialization)
-                (p.SetMethod != null || p.IsRequired))
+                // Source properties: need a getter (we READ from them — includes computed props like TotalPrice)
+                // Destination properties: need a setter or be required (we WRITE to them)
+                (isSource
+                    ? p.GetMethod != null
+                    : (p.SetMethod != null || p.IsRequired)))
 
             // Convert each property to our PropertyModel format
             .Select(p => new PropertyModel
@@ -1117,7 +1127,7 @@ public class ZMapperGenerator : IIncrementalGenerator
         sb.AppendLine("using System.Collections.Generic;");
         sb.AppendLine("using System.Linq;");
         sb.AppendLine("using ZMapper;");
-        sb.AppendLine("using ZMapper.Abstractions;");
+        // All ZMapper types (IMapper, IMapperProfile, etc.) are in the ZMapper namespace
         sb.AppendLine();
 
         // Namespace and class declaration
@@ -1766,7 +1776,8 @@ public class ZMapperGenerator : IIncrementalGenerator
         sb.AppendLine("#pragma warning disable CS8601 // Possible null reference assignment in generated mapping code");
         sb.AppendLine();
 
-        sb.AppendLine($"namespace {model.Namespace};");
+        // Emit extensions into the ZMapper namespace so users only need 'using ZMapper;'
+        sb.AppendLine("namespace ZMapper;");
         sb.AppendLine();
 
         sb.AppendLine($"// Extension methods for zero-overhead mapping");
@@ -1877,10 +1888,9 @@ public class ZMapperGenerator : IIncrementalGenerator
         sb.AppendLine("using System;");
         sb.AppendLine("using System.Collections.Generic;");
         sb.AppendLine("using System.Linq;");
-        sb.AppendLine("using ZMapper;");
-        sb.AppendLine("using ZMapper.Abstractions;");
+        // All ZMapper types (IMapper, IMapperProfile, Mapper) live in the ZMapper namespace
         sb.AppendLine();
-        sb.AppendLine($"namespace {ns};");
+        sb.AppendLine("namespace ZMapper;");
         sb.AppendLine();
         sb.AppendLine("/// <summary>");
         sb.AppendLine("/// Unified mapper generated from all IMapperProfile implementations.");
@@ -2005,10 +2015,9 @@ public class ZMapperGenerator : IIncrementalGenerator
         sb.AppendLine("#pragma warning disable CS8601 // Possible null reference assignment in generated mapping code");
         sb.AppendLine();
         sb.AppendLine("using Microsoft.Extensions.DependencyInjection;");
-        sb.AppendLine("using ZMapper;");
-        sb.AppendLine("using ZMapper.Abstractions;");
+        // AddZMapper() lives in the ZMapper namespace for easy discoverability
         sb.AppendLine();
-        sb.AppendLine($"namespace {ns};");
+        sb.AppendLine("namespace ZMapper;");
         sb.AppendLine();
         sb.AppendLine("/// <summary>");
         sb.AppendLine("/// DI extension for registering ZMapper with all discovered profiles.");

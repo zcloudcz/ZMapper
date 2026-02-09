@@ -18,8 +18,8 @@ public partial class ComplexBatchMapperBenchmark
     private ComplexOrder[] _orders = null!;
 
     // Mapper instances
-    private IMapper _autoMapper = null!;
-    private ZMapper.Abstractions.IMapper _zMapper = null!;
+    private AutoMapper.IMapper _autoMapper = null!;
+    private ZMapper.IMapper _zMapper = null!;
     private ComplexMapperlyMapper _mapperlyMapper = null!;
 
     /// <summary>

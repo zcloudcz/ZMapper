@@ -1,6 +1,6 @@
 using System;
 
-namespace ZMapper.Abstractions.Attributes;
+namespace ZMapper;
 
 /// <summary>
 /// Marks a property to be mapped from a specific source property

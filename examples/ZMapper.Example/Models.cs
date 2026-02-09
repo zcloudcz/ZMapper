@@ -21,7 +21,6 @@ public class UserDto : BaseModel
     public required string Email { get; set; }
     public string? FirstName { get; set; }
     public string? LastName { get; set; }
-    public DateTime CreatedAt { get; set; }
     public bool IsActive { get; set; }
 }
 
@@ -31,6 +30,7 @@ public class AddressDto : BaseModel
     public required string City { get; set; }
     public string? PostalCode { get; set; }
     public required string Country { get; set; }
+    public string? FullAddress { get; set; }
 }
 
 // Destination models

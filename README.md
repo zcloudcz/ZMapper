@@ -65,7 +65,7 @@ public class Person
 ### Option A: Profile-Based Configuration (Recommended)
 
 ```csharp
-using ZMapper.Abstractions.Configuration;
+using ZMapper;
 
 public class PersonProfile : IMapperProfile
 {
@@ -84,7 +84,6 @@ public class PersonProfile : IMapperProfile
 
 ```csharp
 using ZMapper;
-using ZMapper.Abstractions;
 
 public partial class MyMapperConfig
 {
@@ -138,7 +137,7 @@ List<Person> activePeople = mapper.MapList<PersonDto, Person>(filtered);
 Profiles let you group related mappings into separate classes, just like AutoMapper:
 
 ```csharp
-using ZMapper.Abstractions.Configuration;
+using ZMapper;
 
 // One profile per domain area
 public class UserProfile : IMapperProfile
@@ -554,10 +553,10 @@ public class UserProfile : IMapperProfile
 }
 ```
 
-The source generator emits:
+The source generator emits (all in `namespace ZMapper`):
 
 ```csharp
-// 1. Unified mapper with all profile mappings combined
+// 1. Unified mapper with all profile mappings combined (namespace ZMapper)
 public sealed class Mapper : IMapper
 {
     public User Map_UserDto_To_User(UserDto source)
@@ -594,29 +593,20 @@ public static IServiceCollection AddZMapper(this IServiceCollection services)
 
 ## Troubleshooting
 
-### Required `using` Statements
+### Single Namespace
 
-Both namespaces are needed when using profiles:
-
-```csharp
-using ZMapper;                              // MapperConfiguration
-using ZMapper.Abstractions.Configuration;   // IMapperProfile
-```
-
-### Generated Code Namespace
-
-The source generator emits extension methods and the `Mapper` class into the **same namespace as your profile/config classes**. If your profiles are in `MyApp.Mapping`, consumers need:
+Everything lives in the `ZMapper` namespace — all interfaces, generated `Mapper` class, `.ToXxx()` extension methods, and `AddZMapper()` DI extension. Just one `using` needed:
 
 ```csharp
-using MyApp.Mapping; // for .ToXxx() extensions and AddZMapper()
+using ZMapper; // MapperConfiguration, IMapper, IMapperProfile, Mapper, .ToXxx(), AddZMapper()
 ```
 
 ### Profile Classes Must Be `partial`
 
-The source generator creates a partial counterpart. Missing `partial` causes CS0260:
+The source generator creates a partial counterpart for profile classes. Missing `partial` causes CS0260:
 
 ```csharp
-public partial class UserProfile : IMapperProfile  // ✅ partial required
+public partial class UserProfile : IMapperProfile  // partial required
 ```
 
 ### Inspecting Generated Code

@@ -19,8 +19,8 @@ public partial class ComplexMapperBenchmark
     private ComplexCustomer _customer = null!;
 
     // Mapper instances
-    private IMapper _autoMapper = null!;
-    private ZMapper.Abstractions.IMapper _zMapper = null!;
+    private AutoMapper.IMapper _autoMapper = null!;
+    private ZMapper.IMapper _zMapper = null!;
     private ComplexMapperlyMapper _mapperlyMapper = null!;
 
     [GlobalSetup]

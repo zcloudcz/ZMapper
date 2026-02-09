@@ -1,5 +1,5 @@
-using System.Diagnostics;
-using ZMapper.Abstractions;
+﻿using System.Diagnostics;
+using ZMapper;
 using ZMapper.Example;
 
 Console.WriteLine("=== ZMapper Example ===\n");

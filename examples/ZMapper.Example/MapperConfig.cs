@@ -1,5 +1,4 @@
-using ZMapper.Abstractions.Configuration;
-
+﻿
 namespace ZMapper.Example;
 
 /// <summary>
@@ -14,7 +13,7 @@ public class UserMappingProfile : IMapperProfile
         config.CreateMap<UserDto, User>()
             .ForMember(dest => dest.Id, opt => opt.MapFrom(src => src.Id))
             .ForMember(dest => dest.UserName, opt => opt.MapFrom(src => src.Username))
-            .ForMember(dest => dest.EmailAddress, opt => opt.MapFrom(src => src.Email))
+            .ForMember(dest => dest.EmailAddress, opt => opt.MapFrom(src => src.Email.ToUpper()))
             .ForMember(dest => dest.RegisteredDate, opt => opt.MapFrom(src => src.CreatedAt))
             .ForMember(dest => dest.Active, opt => opt.MapFrom(src => src.IsActive))
             .ForMember(dest => dest.FullName, opt => opt.Ignore());
@@ -32,6 +31,12 @@ public class AddressMappingProfile : IMapperProfile
             .ForMember(dest => dest.StreetAddress, opt => opt.MapFrom(src => src.Street))
             .ForMember(dest => dest.Zip, opt => opt.MapFrom(src => src.PostalCode))
             .ForMember(dest => dest.CountryName, opt => opt.MapFrom(src => src.Country));
+
+        config.CreateMap<Address, AddressDto>()
+            .ForMember(dest => dest.Street, opt => opt.MapFrom(src => src.StreetAddress))
+            .ForMember(dest => dest.PostalCode, opt => opt.MapFrom(src => src.Zip))
+            .ForMember(dest => dest.Country, opt => opt.MapFrom(src => src.CountryName))
+            .ForMember(dest => dest.FullAddress, opt => opt.MapFrom(src=> $"{src.StreetAddress} {src.City} {src.Zip}"));
     }
 }
 

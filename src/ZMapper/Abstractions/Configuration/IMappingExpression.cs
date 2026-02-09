@@ -1,7 +1,7 @@
 using System;
 using System.Linq.Expressions;
 
-namespace ZMapper.Abstractions.Configuration;
+namespace ZMapper;
 
 /// <summary>
 /// Fluent interface for configuring mappings

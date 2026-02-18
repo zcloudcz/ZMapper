@@ -16,7 +16,7 @@
     <!-- Human-readable title displayed on NuGet.org -->
     <Title>ZMapper</Title>
     <!-- SemVer version: Major.Minor.Patch[-prerelease] -->
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <!-- Friendly author name(s) displayed on NuGet.org -->
     <Authors>Martin Zahálka</Authors>
     <!-- Copyright notice with year and owner -->
@@ -35,7 +35,7 @@
     <!-- README file included in the NuGet package (displayed on NuGet.org) -->
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <!-- Release notes documenting breaking changes, new features, and bug fixes -->
-    <PackageReleaseNotes>v1.2.0 - Inheritance support (base class properties), complex MapFrom expressions (navigation properties, null-coalescing), nullable value type handling (DateTime? to DateTime), unified ZMapper namespace, all generated code emitted into namespace ZMapper.</PackageReleaseNotes>
+    <PackageReleaseNotes>v1.2.1 - Limitations fixes - partial profiles, ReverseMap, nullables.</PackageReleaseNotes>
     <!-- Require license acceptance before install (set true if needed) -->
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
 

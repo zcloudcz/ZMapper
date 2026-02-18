@@ -45,7 +45,7 @@ public class ProfileInvoice
 /// Profile that defines ProfileEmployeeDto -> ProfileEmployee mapping.
 /// Demonstrates ForMember usage within a profile.
 /// </summary>
-public class EmployeeProfile : IMapperProfile
+public partial class EmployeeProfile : IMapperProfile
 {
     public void Configure(MapperConfiguration config)
     {
@@ -58,7 +58,7 @@ public class EmployeeProfile : IMapperProfile
 /// Profile that defines ProfileInvoiceDto -> ProfileInvoice mapping.
 /// Demonstrates simple convention-based mapping within a profile.
 /// </summary>
-public class InvoiceProfile : IMapperProfile
+public partial class InvoiceProfile : IMapperProfile
 {
     public void Configure(MapperConfiguration config)
     {

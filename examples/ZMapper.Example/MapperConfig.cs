@@ -5,7 +5,7 @@ namespace ZMapper.Example;
 /// Profile for User-related mappings.
 /// Demonstrates ForMember and Ignore configuration within a profile.
 /// </summary>
-public class UserMappingProfile : IMapperProfile
+public partial class UserMappingProfile : IMapperProfile
 {
     public void Configure(MapperConfiguration config)
     {
@@ -23,7 +23,7 @@ public class UserMappingProfile : IMapperProfile
 /// <summary>
 /// Profile for Address-related mappings.
 /// </summary>
-public class AddressMappingProfile : IMapperProfile
+public partial class AddressMappingProfile : IMapperProfile
 {
     public void Configure(MapperConfiguration config)
     {
@@ -43,7 +43,7 @@ public class AddressMappingProfile : IMapperProfile
 /// <summary>
 /// Profile for Customer-related mappings.
 /// </summary>
-public class CustomerMappingProfile : IMapperProfile
+public partial class CustomerMappingProfile : IMapperProfile
 {
     public void Configure(MapperConfiguration config)
     {

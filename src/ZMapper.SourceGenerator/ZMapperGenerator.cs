@@ -36,6 +36,17 @@ public class ZMapperGenerator : IIncrementalGenerator
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true);
 
+    // Diagnostic emitted when a class implements IMapperProfile but is not declared as 'partial'.
+    // Source generators require partial classes to emit the generated counterpart.
+    // Without 'partial', the build fails with CS0260 — this diagnostic explains WHY.
+    private static readonly DiagnosticDescriptor NonPartialProfileDiagnostic = new(
+        id: "ZMAP002",
+        title: "Profile class must be partial",
+        messageFormat: "Class '{0}' implements IMapperProfile but is not declared as 'partial', add the 'partial' keyword",
+        category: "ZMapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
     /// <summary>
     /// Initialize is called by Roslyn when compilation starts.
     /// This is where we register what syntax we're interested in finding.
@@ -271,6 +282,19 @@ public class ZMapperGenerator : IIncrementalGenerator
         // Verify using semantic model that this class actually implements IMapperProfile
         if (!ImplementsIMapperProfile(classDecl, context.SemanticModel))
             return null;
+
+        // Check if the class is declared as 'partial'.
+        // Source generators REQUIRE partial classes to emit the generated counterpart.
+        // Without it, the compiler emits CS0260. We report a clear ZMAP002 error instead.
+        if (!classDecl.Modifiers.Any(SyntaxKind.PartialKeyword))
+        {
+            return new ProfileConfigurationModel
+            {
+                ClassName = classDecl.Identifier.Text,
+                HasError = true,
+                ErrorDiagnostic = NonPartialProfileDiagnostic
+            };
+        }
 
         // Find the Configure method
         var configureMethod = classDecl.Members
@@ -524,7 +548,9 @@ public class ZMapperGenerator : IIncrementalGenerator
 
         if (!hasReverseMap) return null;
 
-        // Create reverse mapping by swapping source and destination
+        // Create reverse mapping by swapping source and destination.
+        // IgnoreNonExisting is propagated so that the reverse direction also
+        // suppresses ZMAP001 diagnostics for non-matching properties.
         var reverseMapping = new MappingModel
         {
             // Swap source and destination
@@ -536,6 +562,9 @@ public class ZMapperGenerator : IIncrementalGenerator
             // Swap property lists
             SourceProperties = originalMapping.DestinationProperties,
             DestinationProperties = originalMapping.SourceProperties,
+
+            // Propagate IgnoreNonExisting flag to reverse mapping
+            IgnoreNonExisting = originalMapping.IgnoreNonExisting,
 
             // Invert member configurations
             MemberConfigurations = new List<MemberConfigModel>()
@@ -997,7 +1026,21 @@ public class ZMapperGenerator : IIncrementalGenerator
                 SourceText.From(source, Encoding.UTF8));
         }
 
-        // ---- Part 1b: Report diagnostics for unmapped destination properties ----
+        // ---- Part 1b: Report ZMAP002 for non-partial profile classes ----
+        // If a class implements IMapperProfile but is not 'partial', report a clear error
+        // so the user knows exactly what to fix (instead of a cryptic CS0260).
+        foreach (var profile in profileModels.Where(p => p != null && p.HasError))
+        {
+            if (profile!.ErrorDiagnostic != null)
+            {
+                context.ReportDiagnostic(Diagnostic.Create(
+                    profile.ErrorDiagnostic,
+                    Location.None,
+                    profile.ClassName));
+            }
+        }
+
+        // ---- Part 1c: Report diagnostics for unmapped destination properties ----
         // For each mapping, check if any destination properties have no source match
         // and IgnoreNonExisting() was not called.
         foreach (var group in grouped)
@@ -1010,7 +1053,7 @@ public class ZMapperGenerator : IIncrementalGenerator
                 }
             }
         }
-        foreach (var profile in profileModels.Where(p => p != null))
+        foreach (var profile in profileModels.Where(p => p != null && !p.HasError))
         {
             foreach (var mapping in profile!.Mappings)
             {
@@ -1026,8 +1069,9 @@ public class ZMapperGenerator : IIncrementalGenerator
             .SelectMany(m => m!.Mappings)
             .ToList();
 
+        // Exclude profiles with errors (e.g., non-partial classes) from code generation
         var allMappingsFromProfiles = profileModels
-            .Where(p => p != null)
+            .Where(p => p != null && !p.HasError)
             .SelectMany(p => p!.Mappings)
             .ToList();
 
@@ -1043,7 +1087,7 @@ public class ZMapperGenerator : IIncrementalGenerator
         {
             // Use first available namespace
             var extensionNamespace = models.FirstOrDefault(m => m != null)?.Namespace
-                ?? profileModels.FirstOrDefault(p => p != null)?.Namespace
+                ?? profileModels.FirstOrDefault(p => p != null && !p.HasError)?.Namespace
                 ?? "ZMapper.Generated";
 
             var extensionModel = new MapperConfigurationModel
@@ -1062,7 +1106,8 @@ public class ZMapperGenerator : IIncrementalGenerator
 
         // ---- Part 4: Generate Unified Mapper and DI extension for Profile-based configurations ----
 
-        var validProfiles = profileModels.Where(p => p != null).ToList();
+        // Only process profiles that are valid (no errors like non-partial class)
+        var validProfiles = profileModels.Where(p => p != null && !p.HasError).ToList();
         if (validProfiles.Any())
         {
             // Collect all profile mappings (deduplicated)
@@ -1482,7 +1527,13 @@ public class ZMapperGenerator : IIncrementalGenerator
                 }
                 else if (sourceProp != null)
                 {
-                    propsToInitialize.Add($"                {destProp.Name} = source.{sourceProp.Name}");
+                    // When source is nullable and destination is non-nullable (e.g. DateTime? -> DateTime),
+                    // use ?? default to avoid CS0266 compile error in the object initializer.
+                    var value = $"source.{sourceProp.Name}";
+                    if (sourceProp.IsNullable && !destProp.IsNullable)
+                        value += " ?? default";
+
+                    propsToInitialize.Add($"                {destProp.Name} = {value}");
                 }
             }
 
@@ -1819,7 +1870,13 @@ public class ZMapperGenerator : IIncrementalGenerator
                     }
                     else if (sourceProp != null)
                     {
-                        propsToInitialize.Add($"            {destProp.Name} = source.{sourceProp.Name}");
+                        // When source is nullable and destination is non-nullable (e.g. DateTime? -> DateTime),
+                        // use ?? default to avoid CS0266 compile error in the object initializer.
+                        var value = $"source.{sourceProp.Name}";
+                        if (sourceProp.IsNullable && !destProp.IsNullable)
+                            value += " ?? default";
+
+                        propsToInitialize.Add($"            {destProp.Name} = {value}");
                     }
                 }
 
@@ -2102,6 +2159,17 @@ internal class ProfileConfigurationModel
 
     /// <summary>All the mappings configured in this profile's Configure method</summary>
     public List<MappingModel> Mappings { get; set; } = new();
+
+    /// <summary>
+    /// If true, this profile has a validation error (e.g., class is not partial).
+    /// The generator will report a diagnostic and skip code generation for this profile.
+    /// </summary>
+    public bool HasError { get; set; }
+
+    /// <summary>
+    /// The diagnostic descriptor to report when HasError is true.
+    /// </summary>
+    public DiagnosticDescriptor? ErrorDiagnostic { get; set; }
 }
 
 /// <summary>

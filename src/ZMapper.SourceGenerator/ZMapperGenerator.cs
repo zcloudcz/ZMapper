@@ -2215,10 +2215,29 @@ public class ZMapperGenerator : IIncrementalGenerator
             var ifKeyword = first ? "if" : "else if";
             first = false;
 
+            // NOTE: We can't use Unsafe.As<ReadOnlySpan<TSource>, ReadOnlySpan<X>>(ref source)
+            // because that requires 'allows ref struct' constraint (C# 13 / .NET 9+).
+            // For .NET 8 compatibility, we iterate element-wise. The per-element cast
+            // via (object) boxes value types — but this is only the generic dispatch path.
+            // For hot-path performance, callers should use typed methods or .ToX() extensions.
             sb.AppendLine($"            {ifKeyword} (typeof(TSource) == typeof({mapping.SourceType}) && typeof(TDestination) == typeof({mapping.DestinationType}))");
             sb.AppendLine("            {");
-            sb.AppendLine($"                var typedSource = System.Runtime.CompilerServices.Unsafe.As<System.ReadOnlySpan<TSource>, System.ReadOnlySpan<{mapping.SourceType}>>(ref source);");
-            sb.AppendLine($"                return (TDestination[])(object)MapArray_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(typedSource);");
+            sb.AppendLine($"                var result = new {mapping.DestinationType}[source.Length];");
+            sb.AppendLine("                for (int i = 0; i < source.Length; i++)");
+            sb.AppendLine("                {");
+            bool hasConvertUsingDispatch = !string.IsNullOrEmpty(mapping.ConvertUsingExpression) || !string.IsNullOrEmpty(mapping.ConvertUsingConverterType);
+            bool hasConstructUsingDispatch = !string.IsNullOrEmpty(mapping.ConstructUsingExpression);
+            bool hasHooksDispatch = !string.IsNullOrEmpty(mapping.BeforeMapFieldName) || !string.IsNullOrEmpty(mapping.AfterMapFieldName);
+            if (hasConvertUsingDispatch || hasConstructUsingDispatch || hasHooksDispatch)
+            {
+                sb.AppendLine($"                    result[i] = Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(({mapping.SourceType})(object)source[i]!);");
+            }
+            else
+            {
+                sb.AppendLine($"                    result[i] = (({mapping.SourceType})(object)source[i]!).To{mapping.DestinationTypeName}();");
+            }
+            sb.AppendLine("                }");
+            sb.AppendLine($"                return (TDestination[])(object)result;");
             sb.AppendLine("            }");
         }
 

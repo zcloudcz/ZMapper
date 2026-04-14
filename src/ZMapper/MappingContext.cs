@@ -32,7 +32,13 @@ public sealed class MappingContext
     /// <summary>Gets a strongly-typed value by key. Throws if key not found or type mismatch.</summary>
     public T Get<T>(string key) => (T)_items[key];
 
+    /// <summary>Gets a strongly-typed value or default(T) if the key is not present.
+    /// Use this overload in expression trees (e.g., PreCondition lambdas) — optional
+    /// parameters are not allowed inside expression trees on older compilers.</summary>
+    public T GetOrDefault<T>(string key)
+        => _items.TryGetValue(key, out var value) ? (T)value : default!;
+
     /// <summary>Gets a strongly-typed value or returns defaultValue if the key is not present.</summary>
-    public T GetOrDefault<T>(string key, T defaultValue = default!)
+    public T GetOrDefault<T>(string key, T defaultValue)
         => _items.TryGetValue(key, out var value) ? (T)value : defaultValue;
 }

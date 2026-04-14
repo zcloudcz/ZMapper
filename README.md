@@ -4,7 +4,7 @@
 **High-Performance Object Mapping for .NET**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![.NET](https://img.shields.io/badge/.NET-9.0+-purple.svg)](https://dotnet.microsoft.com/)
+[![.NET](https://img.shields.io/badge/.NET-8.0%20%7C%2010.0%20%7C%20netstandard2.0-purple.svg)](https://dotnet.microsoft.com/)
 [![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
 
 *AutoMapper's fluent API + Mapperly's compile-time source generation = ZMapper*
@@ -48,6 +48,8 @@ dotnet add package ZMapper
 ```
 
 > **Single NuGet package** - includes both the runtime library and the compile-time source generator. No separate analyzer package needed.
+
+> **Target frameworks** - ships dedicated builds for `net10.0`, `net8.0` (LTS), and `netstandard2.0` (for .NET Framework 4.6.1+ / .NET Core 2.0+ fallback). On .NET 8 and 10 the BCL `Span<T>` is used directly (no `System.Memory` polyfill).
 
 ### Define Your Types
 

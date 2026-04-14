@@ -1,8 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- Multi-target: net10.0 for modern apps, netstandard2.0 for broad compatibility -->
-    <TargetFrameworks>net10.0;netstandard2.0</TargetFrameworks>
+    <!-- Multi-target:
+         - net10.0 for the latest framework features (BCL types, JIT improvements)
+         - net8.0 for LTS support (broadest modern .NET coverage — .NET 8 is LTS until Nov 2026)
+         - netstandard2.0 for fallback compatibility (.NET Framework 4.6.1+, .NET Core 2.0+) -->
+    <TargetFrameworks>net10.0;net8.0;netstandard2.0</TargetFrameworks>
     <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -16,7 +19,7 @@
     <!-- Human-readable title displayed on NuGet.org -->
     <Title>ZMapper</Title>
     <!-- SemVer version: Major.Minor.Patch[-prerelease] -->
-    <Version>1.2.2</Version>
+    <Version>1.3.0</Version>
     <!-- Friendly author name(s) displayed on NuGet.org -->
     <Authors>Martin Zahálka</Authors>
     <!-- Copyright notice with year and owner -->
@@ -35,7 +38,7 @@
     <!-- README file included in the NuGet package (displayed on NuGet.org) -->
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <!-- Release notes documenting breaking changes, new features, and bug fixes -->
-    <PackageReleaseNotes>ZMapper v1.2.2 adds ConvertUsing, ConstructUsing for custom factories, PreCondition with runtime MappingContext, per-member ConvertUsing of T (s => s.X), MemberList validation (Destination/Source/None), and config.CreateMapper() for standalone scenarios without DI.</PackageReleaseNotes>
+    <PackageReleaseNotes>ZMapper v1.3.0 adds explicit .NET 8 (LTS) target framework support — the package now ships dedicated lib/net8.0 binaries alongside net10.0 and netstandard2.0, so .NET 8 consumers no longer pull the System.Memory polyfill and benefit from BCL Span&lt;T&gt; directly. Verified with the full 176-test suite passing on both net8.0 and net10.0.</PackageReleaseNotes>
     <!-- Require license acceptance before install (set true if needed) -->
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
 

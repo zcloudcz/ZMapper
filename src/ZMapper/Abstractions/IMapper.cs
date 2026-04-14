@@ -15,6 +15,17 @@ public interface IMapper
     TDestination Map<TSource, TDestination>(TSource source);
 
     /// <summary>
+    /// Maps source object to destination type with runtime context parameters.
+    /// Context values are accessible in PreCondition and When expressions.
+    ///
+    /// For beginners: Pass runtime parameters like "IgnoreNested" that change mapping behavior:
+    ///   var ctx = new MappingContext();
+    ///   ctx["IgnoreNested"] = true;
+    ///   mapper.Map&lt;CompanyDto, Company&gt;(dto, ctx);
+    /// </summary>
+    TDestination Map<TSource, TDestination>(TSource source, MappingContext context);
+
+    /// <summary>
     /// Maps source object to existing destination instance
     /// </summary>
     TDestination Map<TSource, TDestination>(TSource source, TDestination destination);

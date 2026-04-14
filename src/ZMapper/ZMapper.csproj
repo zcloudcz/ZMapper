@@ -16,7 +16,7 @@
     <!-- Human-readable title displayed on NuGet.org -->
     <Title>ZMapper</Title>
     <!-- SemVer version: Major.Minor.Patch[-prerelease] -->
-    <Version>1.2.1</Version>
+    <Version>1.2.2</Version>
     <!-- Friendly author name(s) displayed on NuGet.org -->
     <Authors>Martin Zahálka</Authors>
     <!-- Copyright notice with year and owner -->
@@ -35,7 +35,7 @@
     <!-- README file included in the NuGet package (displayed on NuGet.org) -->
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <!-- Release notes documenting breaking changes, new features, and bug fixes -->
-    <PackageReleaseNotes>v1.2.1 - Limitations fixes - partial profiles, ReverseMap, nullables.</PackageReleaseNotes>
+    <PackageReleaseNotes>ZMapper v1.2.2 adds ConvertUsing, ConstructUsing for custom factories, PreCondition with runtime MappingContext, per-member ConvertUsing of T (s => s.X), MemberList validation (Destination/Source/None), and config.CreateMapper() for standalone scenarios without DI.</PackageReleaseNotes>
     <!-- Require license acceptance before install (set true if needed) -->
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
 

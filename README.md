@@ -26,6 +26,12 @@
 - **Dependency Injection** - Auto-generated `AddZMapper()` extension for `IServiceCollection`
 - **Hooks** - `BeforeMap` and `AfterMap` callbacks for custom pre/post-processing logic
 - **Conditional Mapping** - Map properties only when conditions are met (`When()`)
+- **PreCondition with Context** - Runtime-parameterized conditions via `MappingContext` (`PreCondition((src, ctx) => ...)`)
+- **ConvertUsing** - Whole-object conversion via lambda (`ConvertUsing(s => s.Id)`) or ITypeConverter class
+- **ConstructUsing** - Custom factory for destination construction (`ConstructUsing(s => new Dest(s.Id))`)
+- **Member ConvertUsing + Source Property** - Per-member converter with explicit source (`ConvertUsing<T>(s => s.OtherProp)`)
+- **MemberList Validation** - `MemberList.Source`, `.Destination`, or `.None` for compile-time coverage checks
+- **Standalone Mapper** - `config.CreateMapper()` for non-DI scenarios (console apps, tools, tests)
 - **Reverse Mapping** - Bidirectional mappings with a single `.ReverseMap()` call
 - **Nested Objects** - Full support for deep object graphs (any nesting depth)
 - **Collections** - High-performance batch mapping with `ReadOnlySpan<T>`, arrays, lists, and `IEnumerable<T>`
@@ -400,6 +406,98 @@ config.CreateMap<ProductDto, Product>()
     });
 ```
 
+### ConvertUsing - Whole-Object Conversion
+
+Replace the entire property-by-property mapping with a single expression or converter class:
+
+```csharp
+// Lambda: extract a single value from a complex type
+config.CreateMap<ListDto, int>().ConvertUsing(s => s.Id);
+config.CreateMap<ListDto, string>().ConvertUsing(s => s.Text);
+
+// ITypeConverter class: reusable conversion logic (e.g., DateTimeOffset -> DateTime)
+config.CreateMap<DateTimeOffset, DateTime>().ConvertUsing<DateTimeOffsetToDateTimeConverter>();
+
+// Where:
+public class DateTimeOffsetToDateTimeConverter : ITypeConverter<DateTimeOffset, DateTime>
+{
+    public DateTime Convert(DateTimeOffset source) => source.UtcDateTime;
+}
+```
+
+### ConstructUsing - Custom Factory
+
+Use when the destination type has no parameterless constructor. Property mapping still applies after construction:
+
+```csharp
+config.CreateMap<PersonDto, ImmutablePerson>()
+    .ConstructUsing(s => new ImmutablePerson(s.Id, s.Name))
+    .IgnoreNonExisting(); // Id, Name are read-only (set via constructor)
+// After ConstructUsing, mutable properties (e.g., Age) are still mapped by convention
+```
+
+### PreCondition - Context-Aware Conditional Mapping
+
+Map properties conditionally based on runtime parameters passed via `MappingContext`:
+
+```csharp
+config.CreateMap<CompanyDto, Company>()
+    .ForMember(d => d.Region,
+        opt => opt.PreCondition((src, ctx) => !ctx.GetOrDefault<bool>("IgnoreNested")))
+    .ForMember(d => d.Stream,
+        opt => opt.PreCondition((src, ctx) => !ctx.GetOrDefault<bool>("IgnoreNested")));
+
+// Usage: pass context to skip nested properties
+var ctx = new MappingContext();
+ctx["IgnoreNested"] = true;
+var company = mapper.Map<CompanyDto, Company>(dto, ctx);
+// company.Region and company.Stream are null (skipped by PreCondition)
+```
+
+### MemberList - Validation Mode
+
+Control which side of the mapping is validated for property coverage:
+
+```csharp
+// Default: MemberList.Destination — every dest property must have a source (ZMAP001 warning)
+config.CreateMap<UserDto, User>();
+
+// Source: every source property must be used (ZMAP003 warning for unused)
+config.CreateMap<UserDto, User>(MemberList.Source);
+
+// None: no validation warnings at all
+config.CreateMap<UserDto, User>(MemberList.None);
+```
+
+### ConvertUsing with Source Property - Per-Member Converter
+
+Use a member converter with an explicit source property (when names differ):
+
+```csharp
+config.CreateMap<InvoiceEntity, InvoiceDto>()
+    .ForMember(d => d.IssuanceDate,
+        opt => opt.ConvertUsing<ToDDMMYYYYConverter, DateTime>(s => s.IssuanceDateOffset));
+//                                                              ^^^^^^^^^^^^^^^^^^^^^^
+//                     source property name differs from destination (IssuanceDateOffset vs IssuanceDate)
+```
+
+### Standalone Mapper (Without DI)
+
+Create mapper instances without dependency injection:
+
+```csharp
+// Option 1: Use Mapper.Create() directly
+IMapper mapper = Mapper.Create();
+
+// Option 2: Use config.CreateMapper() (AutoMapper-compatible pattern)
+var config = new MapperConfiguration();
+new UserProfile().Configure(config);
+IMapper mapper = config.CreateMapper();
+
+// Option 3: Use .ToXxx() extension methods (no mapper instance needed!)
+var user = dto.ToUser();
+```
+
 ### ReverseMap - Bidirectional Mapping
 
 Create mappings in both directions with a single call:
@@ -601,6 +699,14 @@ Everything lives in the `ZMapper` namespace — all interfaces, generated `Mappe
 using ZMapper; // MapperConfiguration, IMapper, IMapperProfile, Mapper, .ToXxx(), AddZMapper()
 ```
 
+### Compile-Time Diagnostics
+
+| Code | Severity | Description |
+|------|----------|-------------|
+| ZMAP001 | Warning | Unmapped destination property (use `Ignore()` or `IgnoreNonExisting()`) |
+| ZMAP002 | Error | Profile class not declared as `partial` |
+| ZMAP003 | Warning | Unused source property (when `MemberList.Source` is active) |
+
 ### Profile Classes Must Be `partial`
 
 The source generator creates a partial counterpart for profile classes. Missing `partial` causes CS0260:
@@ -634,7 +740,7 @@ ZMapper/
     ZMapper/                  # Core library + interfaces (IMapper, IMapperProfile, etc.)
     ZMapper.SourceGenerator/  # Roslyn source generator
   tests/
-    ZMapper.Tests/            # Unit tests (138 tests)
+    ZMapper.Tests/            # Unit tests (176 tests)
     ZMapper.Benchmarks/       # BenchmarkDotNet suite
   examples/
     ZMapper.Example/          # Working example project (Profile pattern)

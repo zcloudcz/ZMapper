@@ -11,7 +11,18 @@ public interface IMapperConfiguration
     IMappingExpression<TSource, TDestination> CreateMap<TSource, TDestination>();
 
     /// <summary>
-    /// Builds and returns the configured mapper
+    /// Creates a mapping with explicit member list validation mode.
     /// </summary>
+    IMappingExpression<TSource, TDestination> CreateMap<TSource, TDestination>(MemberList memberList);
+
+    /// <summary>
+    /// Creates a mapper instance from this configuration (standalone, no DI needed).
+    /// </summary>
+    IMapper CreateMapper();
+
+    /// <summary>
+    /// Builds and returns the configured mapper (obsolete, use CreateMapper instead).
+    /// </summary>
+    [System.Obsolete("Use CreateMapper() instead.")]
     IMapper Build();
 }

@@ -47,6 +47,17 @@ public class ZMapperGenerator : IIncrementalGenerator
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
+    // Diagnostic emitted when MemberList.Source is used and a source property is not utilized.
+    private static readonly DiagnosticDescriptor UnusedSourcePropertyDiagnostic = new(
+        id: "ZMAP003",
+        title: "Unused source property",
+        messageFormat: "Source property '{0}' on type '{1}' is not used in mapping to '{2}'. " +
+                       "Use .ForMember(d => d.Target, opt => opt.MapFrom(src => src.{0})) to map it, " +
+                       "or switch to MemberList.Destination to validate destination coverage instead.",
+        category: "ZMapper",
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
     /// <summary>
     /// Initialize is called by Roslyn when compilation starts.
     /// This is where we register what syntax we're interested in finding.
@@ -432,8 +443,20 @@ public class ZMapperGenerator : IIncrementalGenerator
             MemberConfigurations = ExtractMemberConfigurations(call, semanticModel)
         };
 
-        // Extract BeforeMap/AfterMap hooks
-        ExtractHooks(call, mapping);
+        // Extract BeforeMap/AfterMap hooks + ConvertUsing/ConstructUsing
+        ExtractHooks(call, mapping, semanticModel);
+
+        // Detect MemberList argument: CreateMap<S,D>(MemberList.Source)
+        if (call.ArgumentList.Arguments.Count > 0)
+        {
+            var memberListArg = call.ArgumentList.Arguments[0].Expression;
+            var argText = memberListArg.ToString();
+            if (argText.Contains("Source"))
+                mapping.MemberListValidation = "Source";
+            else if (argText.Contains("None"))
+                mapping.MemberListValidation = "None";
+            // "Destination" is default, no need to set
+        }
 
         return mapping;
     }
@@ -448,28 +471,61 @@ public class ZMapperGenerator : IIncrementalGenerator
         if (mapping.IgnoreNonExisting)
             return;
 
-        foreach (var destProp in mapping.DestinationProperties)
+        // MemberList.None = no validation at all
+        if (mapping.MemberListValidation == "None")
+            return;
+
+        // ConvertUsing replaces entire mapping — no property-level validation needed
+        if (!string.IsNullOrEmpty(mapping.ConvertUsingExpression) || !string.IsNullOrEmpty(mapping.ConvertUsingConverterType))
+            return;
+
+        if (mapping.MemberListValidation == "Source")
         {
-            // Check if explicitly configured (ForMember or Ignore)
-            var memberConfig = mapping.MemberConfigurations.FirstOrDefault(
-                c => c.DestinationMember == destProp.Name);
-
-            if (memberConfig != null)
-                continue; // Explicitly configured - no diagnostic needed
-
-            // Check if there's a matching source property by name
-            var sourcePropName = destProp.Name;
-            var sourceProp = mapping.SourceProperties.FirstOrDefault(p => p.Name == sourcePropName);
-
-            if (sourceProp == null)
+            // MemberList.Source: warn on source properties that are not used in the mapping
+            foreach (var sourceProp in mapping.SourceProperties)
             {
-                // No match found - emit diagnostic
-                context.ReportDiagnostic(Diagnostic.Create(
-                    UnmappedPropertyDiagnostic,
-                    Location.None,
-                    destProp.Name,
-                    mapping.DestinationTypeName,
-                    mapping.SourceTypeName));
+                // Check if any ForMember references this source property
+                var usedByMember = mapping.MemberConfigurations.Any(
+                    c => c.SourceMember == sourceProp.Name);
+
+                // Check if any destination property matches by name (convention)
+                var matchesByConvention = mapping.DestinationProperties.Any(
+                    d => d.Name == sourceProp.Name);
+
+                if (!usedByMember && !matchesByConvention)
+                {
+                    context.ReportDiagnostic(Diagnostic.Create(
+                        UnusedSourcePropertyDiagnostic,
+                        Location.None,
+                        sourceProp.Name,
+                        mapping.SourceTypeName,
+                        mapping.DestinationTypeName));
+                }
+            }
+        }
+        else
+        {
+            // MemberList.Destination (default): warn on unmapped destination properties
+            foreach (var destProp in mapping.DestinationProperties)
+            {
+                var memberConfig = mapping.MemberConfigurations.FirstOrDefault(
+                    c => c.DestinationMember == destProp.Name);
+
+                if (memberConfig != null)
+                    continue;
+
+                var sourcePropName = destProp.Name;
+                var sourceProp = mapping.SourceProperties.FirstOrDefault(p => p.Name == sourcePropName);
+
+                if (sourceProp == null)
+                {
+                    context.ReportDiagnostic(Diagnostic.Create(
+                        UnmappedPropertyDiagnostic,
+                        Location.None,
+                        destProp.Name,
+                        mapping.DestinationTypeName,
+                        mapping.SourceTypeName));
+                }
             }
         }
     }
@@ -478,7 +534,7 @@ public class ZMapperGenerator : IIncrementalGenerator
     /// Extract BeforeMap and AfterMap hooks from a CreateMap call chain.
     /// Generates static field names to store the Action delegates.
     /// </summary>
-    private static void ExtractHooks(InvocationExpressionSyntax createMapCall, MappingModel mapping)
+    private static void ExtractHooks(InvocationExpressionSyntax createMapCall, MappingModel mapping, SemanticModel semanticModel)
     {
         // Find the entire statement containing the CreateMap
         var statement = createMapCall.FirstAncestorOrSelf<ExpressionStatementSyntax>();
@@ -518,6 +574,75 @@ public class ZMapperGenerator : IIncrementalGenerator
         {
             mapping.IgnoreNonExisting = true;
         }
+
+        // Look for ConvertUsing() call — replaces entire mapping with expression or converter
+        // Two forms: .ConvertUsing(s => expr) (lambda) and .ConvertUsing<TConverter>() (generic type)
+        var convertUsingCalls = statement.DescendantNodes()
+            .OfType<InvocationExpressionSyntax>()
+            .Where(inv => inv.Expression is MemberAccessExpressionSyntax mae &&
+                         mae.Name.Identifier.Text == "ConvertUsing")
+            .ToList();
+
+        foreach (var convertUsingCall in convertUsingCalls)
+        {
+            // Check if it's a ForMember-level ConvertUsing (skip those — handled in AnalyzeMemberConfiguration)
+            // ForMember-level: appears inside a lambda body, has parent InvocationExpression named "ForMember"
+            var isForMemberLevel = convertUsingCall.Ancestors()
+                .OfType<InvocationExpressionSyntax>()
+                .Any(inv => inv.Expression is MemberAccessExpressionSyntax pMae &&
+                           pMae.Name.Identifier.Text == "ForMember");
+            if (isForMemberLevel)
+                continue;
+
+            var convertMae = (MemberAccessExpressionSyntax)convertUsingCall.Expression;
+
+            // Form 1: ConvertUsing<TConverter>() — generic with no arguments
+            if (convertMae.Name is GenericNameSyntax genericConvert &&
+                genericConvert.TypeArgumentList.Arguments.Count == 1)
+            {
+                var converterType = semanticModel.GetTypeInfo(genericConvert.TypeArgumentList.Arguments[0]).Type;
+                if (converterType != null)
+                {
+                    mapping.ConvertUsingConverterType = converterType.ToDisplayString();
+                }
+            }
+            // Form 2: ConvertUsing(s => expr) — lambda argument
+            else if (convertUsingCall.ArgumentList.Arguments.Count > 0)
+            {
+                var arg = convertUsingCall.ArgumentList.Arguments[0].Expression;
+                if (arg is SimpleLambdaExpressionSyntax lambda)
+                {
+                    var parameterName = lambda.Parameter.Identifier.Text;
+                    var expressionBody = lambda.Body.ToString();
+                    // Replace lambda parameter with "source" for generated code context
+                    mapping.ConvertUsingExpression = expressionBody.Replace(parameterName + ".", "source.");
+                }
+            }
+        }
+
+        // Look for ConstructUsing() call — custom factory for destination object creation
+        var constructUsingCall = statement.DescendantNodes()
+            .OfType<InvocationExpressionSyntax>()
+            .FirstOrDefault(inv => inv.Expression is MemberAccessExpressionSyntax mae &&
+                                 mae.Name.Identifier.Text == "ConstructUsing");
+
+        if (constructUsingCall != null && constructUsingCall.ArgumentList.Arguments.Count > 0)
+        {
+            var arg = constructUsingCall.ArgumentList.Arguments[0].Expression;
+            if (arg is SimpleLambdaExpressionSyntax lambda)
+            {
+                var parameterName = lambda.Parameter.Identifier.Text;
+                var expressionBody = lambda.Body.ToString();
+                // Replace lambda parameter with "source" for generated code context
+                expressionBody = expressionBody.Replace(parameterName + ".", "source.");
+                // Replace short destination type name with fully qualified name
+                // so the expression works in the ZMapper namespace (extension methods)
+                expressionBody = expressionBody.Replace(
+                    $"new {mapping.DestinationTypeName}(",
+                    $"new {mapping.DestinationType}(");
+                mapping.ConstructUsingExpression = expressionBody;
+            }
+        }
     }
 
     /// <summary>
@@ -549,8 +674,15 @@ public class ZMapperGenerator : IIncrementalGenerator
         if (!hasReverseMap) return null;
 
         // Create reverse mapping by swapping source and destination.
-        // IgnoreNonExisting is propagated so that the reverse direction also
-        // suppresses ZMAP001 diagnostics for non-matching properties.
+        // What gets propagated:
+        //   - IgnoreNonExisting: yes — same validation intent applies in reverse
+        //   - MemberListValidation: yes — same validation mode
+        //   - PreCondition on members: yes — usually context-based, safe
+        // What does NOT get propagated (direction-specific, would produce invalid code):
+        //   - ConvertUsingExpression / ConvertUsingConverterType: replaces entire mapping,
+        //     reverse direction needs its own converter
+        //   - ConstructUsingExpression: factory creates destination — reverse would need its own
+        //   - MemberConverterTypeName: IMemberConverter<TS, TM, TDM> generic args are direction-specific
         var reverseMapping = new MappingModel
         {
             // Swap source and destination
@@ -566,6 +698,10 @@ public class ZMapperGenerator : IIncrementalGenerator
             // Propagate IgnoreNonExisting flag to reverse mapping
             IgnoreNonExisting = originalMapping.IgnoreNonExisting,
 
+            // Propagate MemberList validation mode (if user wants Source validation
+            // in one direction, they probably want it in the reverse too)
+            MemberListValidation = originalMapping.MemberListValidation,
+
             // Invert member configurations
             MemberConfigurations = new List<MemberConfigModel>()
         };
@@ -576,6 +712,14 @@ public class ZMapperGenerator : IIncrementalGenerator
             // Skip ignored members
             if (memberConfig.IsIgnored) continue;
 
+            // Skip members with ConvertUsing converter — the IMemberConverter<,,> generic args
+            // don't compose when reversed, so the reverse has no safe interpretation
+            if (!string.IsNullOrEmpty(memberConfig.MemberConverterTypeName)) continue;
+
+            // Skip members with complex MapFrom expressions — we can't automatically invert
+            // an expression like `src.Client.Name` or `src.Date ?? DateTime.UtcNow`
+            if (!string.IsNullOrEmpty(memberConfig.SourceExpression)) continue;
+
             // For reverse mapping:
             // Original: dest.OrderId <- src.Id (DestinationMember="OrderId", SourceMember="Id")
             // Reverse:  dest.Id <- src.OrderId (DestinationMember="Id", SourceMember="OrderId")
@@ -583,7 +727,10 @@ public class ZMapperGenerator : IIncrementalGenerator
             {
                 DestinationMember = memberConfig.SourceMember ?? memberConfig.DestinationMember,
                 SourceMember = memberConfig.DestinationMember,
-                IsIgnored = false
+                IsIgnored = false,
+                // Propagate PreCondition — context-based PreConditions remain valid.
+                // If PreCondition references source.X, user is responsible for compatibility.
+                PreCondition = memberConfig.PreCondition
             };
 
             reverseMapping.MemberConfigurations.Add(reverseMemberConfig);
@@ -956,7 +1103,59 @@ public class ZMapperGenerator : IIncrementalGenerator
                         }
                     }
                 }
-                // Future: Add support for ConvertUsing, etc.
+                else if (mae.Name.Identifier.Text == "ConvertUsing")
+                {
+                    // Member-level ConvertUsing — two forms:
+                    // 1. opt.ConvertUsing<TConverter>() — no args, uses convention source prop
+                    // 2. opt.ConvertUsing<TConverter, TSourceMember>(s => s.OtherProp) — explicit source
+                    if (mae.Name is GenericNameSyntax genName)
+                    {
+                        // Get the converter type (first generic argument)
+                        var firstTypeArg = genName.TypeArgumentList.Arguments[0];
+                        var converterType = semanticModel.GetTypeInfo(firstTypeArg).Type;
+                        if (converterType != null)
+                        {
+                            config.MemberConverterTypeName = converterType.ToDisplayString();
+                        }
+
+                        // Check for explicit source property lambda argument
+                        if (inv.ArgumentList.Arguments.Count > 0)
+                        {
+                            var arg = inv.ArgumentList.Arguments[0].Expression;
+                            if (arg is SimpleLambdaExpressionSyntax srcLambda)
+                            {
+                                var simpleName = ExtractMemberNameFromLambda(srcLambda);
+                                if (simpleName != null)
+                                {
+                                    config.SourceMember = simpleName;
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (mae.Name.Identifier.Text == "PreCondition")
+                {
+                    // opt.PreCondition((src, ctx) => ctx.GetOrDefault<bool>("MapNested", true))
+                    // Two-parameter lambda: source and context
+                    if (inv.ArgumentList.Arguments.Count > 0)
+                    {
+                        var arg = inv.ArgumentList.Arguments[0].Expression;
+                        // Handle (src, ctx) => ... parenthesized lambda
+                        if (arg is ParenthesizedLambdaExpressionSyntax pLambda &&
+                            pLambda.ParameterList.Parameters.Count == 2)
+                        {
+                            var srcParam = pLambda.ParameterList.Parameters[0].Identifier.Text;
+                            var ctxParam = pLambda.ParameterList.Parameters[1].Identifier.Text;
+                            var conditionBody = pLambda.Body.ToString();
+                            // Replace parameter names with generated code variable names
+                            conditionBody = conditionBody.Replace(srcParam + ".", "source.");
+                            conditionBody = conditionBody.Replace(ctxParam + ".", "context.");
+                            // Also handle bare parameter references (e.g., ctx alone)
+                            conditionBody = conditionBody.Replace(ctxParam, "context");
+                            config.PreCondition = conditionBody;
+                        }
+                    }
+                }
             }
         }
     }
@@ -978,12 +1177,39 @@ public class ZMapperGenerator : IIncrementalGenerator
     /// For beginners: This is where we finally WRITE the code!
     /// We take all the recipes (configurations) and write actual C# methods.
     /// </summary>
+    /// <summary>
+    /// Global registry of type converters (populated per-compilation during Execute).
+    /// Key: "SourceType|DestinationType", Value: fully qualified converter type name.
+    /// Used by GeneratePropertyAssignment to auto-apply ITypeConverter mappings
+    /// whenever a property's (source type, dest type) pair has a registered converter.
+    ///
+    /// For example: CreateMap<DateTimeOffset, DateTime>().ConvertUsing<MyConverter>();
+    /// → any property of type DateTimeOffset mapped to DateTime auto-uses MyConverter.
+    /// </summary>
+    [System.ThreadStatic]
+    private static Dictionary<string, string>? _typeConverters;
+
     private static void Execute(
         System.Collections.Immutable.ImmutableArray<MapperConfigurationModel?> models,
         System.Collections.Immutable.ImmutableArray<ProfileConfigurationModel?> profileModels,
         Compilation compilation,
         SourceProductionContext context)
     {
+        // ---- Part 0: Build the global type-converter registry (Feature 2 Part B) ----
+        // Any CreateMap<S,D>().ConvertUsing<T>() mapping is automatically applied to
+        // properties across all other mappings where types match.
+        _typeConverters = new Dictionary<string, string>();
+        var allMappingsForConverters = models.Where(m => m != null).SelectMany(m => m!.Mappings)
+            .Concat(profileModels.Where(p => p != null && !p.HasError).SelectMany(p => p!.Mappings));
+        foreach (var m in allMappingsForConverters)
+        {
+            if (!string.IsNullOrEmpty(m.ConvertUsingConverterType))
+            {
+                var key = $"{m.SourceType}|{m.DestinationType}";
+                _typeConverters[key] = m.ConvertUsingConverterType!;
+            }
+        }
+
         // ---- Part 1: Generate code for CreateMap-based configurations (existing pattern) ----
 
         // Group configurations by class (namespace + class name)
@@ -1164,7 +1390,7 @@ public class ZMapperGenerator : IIncrementalGenerator
         // File header
         sb.AppendLine("// <auto-generated />");
         sb.AppendLine("#nullable enable");
-        sb.AppendLine("#pragma warning disable CS8601 // Possible null reference assignment in generated mapping code");
+        sb.AppendLine("#pragma warning disable CS8600, CS8601, CS8603, CS8604 // Possible null reference in generated mapping code");
         sb.AppendLine();
 
         // Using statements
@@ -1210,6 +1436,12 @@ public class ZMapperGenerator : IIncrementalGenerator
             GenerateMapArrayMethod(sb, mapping);         // MapArray(span) -> array
             GenerateMapListMethod(sb, mapping);          // MapList(IReadOnlyList) -> list
             GenerateMapListEnumerableMethod(sb, mapping); // MapList(IEnumerable) -> list
+
+            // Generate context-aware overload if any member has PreCondition
+            if (mapping.MemberConfigurations.Any(c => !string.IsNullOrEmpty(c.PreCondition)))
+            {
+                GenerateMapMethodWithContext(sb, mapping);
+            }
         }
 
         // Generate generic methods that dispatch to specific methods
@@ -1339,11 +1571,30 @@ public class ZMapperGenerator : IIncrementalGenerator
             indent += "    "; // Add extra indent for code inside if
         }
 
-        // CASE 0: Complex MapFrom expression (e.g., src => src.Client.CompanyName or src => src.Date ?? DateTime.UtcNow)
+        // CASE 0a: Member-level ConvertUsing<TConverter> — apply converter to source property
+        // Generates: destination.X = new TConverter().Convert(source, source.Y);
+        if (!string.IsNullOrEmpty(memberConfig?.MemberConverterTypeName))
+        {
+            var srcPropName = memberConfig!.SourceMember ?? destProp.Name;
+            sb.AppendLine($"{indent}destination.{destProp.Name} = new {memberConfig.MemberConverterTypeName}().Convert(source, source.{srcPropName});");
+            return;
+        }
+
+        // CASE 0b: Complex MapFrom expression (e.g., src => src.Client.CompanyName or src => src.Date ?? DateTime.UtcNow)
         // When the user provides a full expression in MapFrom, we emit it directly as the right-hand side.
         if (!string.IsNullOrEmpty(memberConfig?.SourceExpression))
         {
             sb.AppendLine($"{indent}destination.{destProp.Name} = {memberConfig!.SourceExpression};");
+            return;
+        }
+
+        // CASE 0c: Global type converter auto-apply (Feature 2 Part B)
+        // If user registered CreateMap<DateTimeOffset, DateTime>().ConvertUsing<TConv>(),
+        // any property with that (source type, dest type) pair automatically uses the converter.
+        var typeConverterKey = $"{sourceProp.Type}|{destProp.Type}";
+        if (_typeConverters != null && _typeConverters.TryGetValue(typeConverterKey, out var converterTypeName))
+        {
+            sb.AppendLine($"{indent}destination.{destProp.Name} = new {converterTypeName}().Convert(source.{sourceProp.Name});");
             return;
         }
 
@@ -1422,10 +1673,26 @@ public class ZMapperGenerator : IIncrementalGenerator
             indent += "    ";
         }
 
-        // CASE 0: Complex MapFrom expression (e.g., src => src.Client.CompanyName)
+        // CASE 0a: Member-level ConvertUsing<TConverter> — apply converter to source property
+        if (!string.IsNullOrEmpty(memberConfig?.MemberConverterTypeName))
+        {
+            var srcPropName = memberConfig!.SourceMember ?? destProp.Name;
+            sb.AppendLine($"{indent}destination.{destProp.Name} = new {memberConfig.MemberConverterTypeName}().Convert(source, source.{srcPropName});");
+            return;
+        }
+
+        // CASE 0b: Complex MapFrom expression (e.g., src => src.Client.CompanyName)
         if (!string.IsNullOrEmpty(memberConfig?.SourceExpression))
         {
             sb.AppendLine($"{indent}destination.{destProp.Name} = {memberConfig!.SourceExpression};");
+            return;
+        }
+
+        // CASE 0c: Global type converter auto-apply (Feature 2 Part B)
+        var typeConverterKey = $"{sourceProp.Type}|{destProp.Type}";
+        if (_typeConverters != null && _typeConverters.TryGetValue(typeConverterKey, out var converterTypeName))
+        {
+            sb.AppendLine($"{indent}destination.{destProp.Name} = new {converterTypeName}().Convert(source.{sourceProp.Name});");
             return;
         }
 
@@ -1487,6 +1754,24 @@ public class ZMapperGenerator : IIncrementalGenerator
         sb.AppendLine($"        public {mapping.DestinationType} Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}({mapping.SourceType} source)");
         sb.AppendLine("        {");
 
+        // SHORTCUT: ConvertUsing lambda — replace entire mapping with a single expression
+        // Example: CreateMap<ListDto, int>().ConvertUsing(s => s.Id)
+        if (!string.IsNullOrEmpty(mapping.ConvertUsingExpression))
+        {
+            sb.AppendLine($"            return {mapping.ConvertUsingExpression};");
+            sb.AppendLine("        }");
+            return;
+        }
+
+        // SHORTCUT: ConvertUsing<TConverter>() — delegate to a converter class
+        // Example: CreateMap<DateTimeOffset, DateTime>().ConvertUsing<DateTimeOffsetToDateTime>()
+        if (!string.IsNullOrEmpty(mapping.ConvertUsingConverterType))
+        {
+            sb.AppendLine($"            return new {mapping.ConvertUsingConverterType}().Convert(source);");
+            sb.AppendLine("        }");
+            return;
+        }
+
         // Call BeforeMap hook if present
         if (!string.IsNullOrEmpty(mapping.BeforeMapFieldName))
         {
@@ -1501,7 +1786,34 @@ public class ZMapperGenerator : IIncrementalGenerator
         // If BeforeMap exists, destination is already created, so we can't use object initializer
         var hasBeforeMap = !string.IsNullOrEmpty(mapping.BeforeMapFieldName);
 
-        if (hasInitOnlyProps && !hasBeforeMap)
+        // ConstructUsing: replace 'new TDestination()' with a custom factory expression
+        // After construction, property-by-property mapping still applies for settable properties.
+        var useConstructUsing = !string.IsNullOrEmpty(mapping.ConstructUsingExpression);
+
+        if (useConstructUsing && !hasBeforeMap)
+        {
+            // Create destination using the factory expression
+            sb.AppendLine($"            var destination = {mapping.ConstructUsingExpression};");
+
+            // Then apply property mapping for settable properties (same as statement path)
+            foreach (var destProp in mapping.DestinationProperties)
+            {
+                var memberConfig = mapping.MemberConfigurations.FirstOrDefault(
+                    c => c.DestinationMember == destProp.Name);
+
+                if (memberConfig?.IsIgnored == true)
+                    continue;
+
+                var sourcePropName = memberConfig?.SourceMember ?? destProp.Name;
+                var sourceProp = mapping.SourceProperties.FirstOrDefault(p => p.Name == sourcePropName);
+
+                if (sourceProp != null || !string.IsNullOrEmpty(memberConfig?.SourceExpression))
+                {
+                    GeneratePropertyAssignment(sb, destProp, sourceProp!, memberConfig);
+                }
+            }
+        }
+        else if (hasInitOnlyProps && !hasBeforeMap)
         {
             // Generate object initializer pattern
             sb.AppendLine($"            var destination = new {mapping.DestinationType}");
@@ -1527,13 +1839,26 @@ public class ZMapperGenerator : IIncrementalGenerator
                 }
                 else if (sourceProp != null)
                 {
-                    // When source is nullable and destination is non-nullable (e.g. DateTime? -> DateTime),
-                    // use ?? default to avoid CS0266 compile error in the object initializer.
-                    var value = $"source.{sourceProp.Name}";
-                    if (sourceProp.IsNullable && !destProp.IsNullable)
-                        value += " ?? default";
+                    // Member-level converter
+                    if (!string.IsNullOrEmpty(memberConfig?.MemberConverterTypeName))
+                    {
+                        propsToInitialize.Add($"                {destProp.Name} = new {memberConfig!.MemberConverterTypeName}().Convert(source, source.{sourceProp.Name})");
+                    }
+                    // Global type converter auto-apply (Feature 2 Part B)
+                    else if (_typeConverters != null && _typeConverters.TryGetValue($"{sourceProp.Type}|{destProp.Type}", out var converter))
+                    {
+                        propsToInitialize.Add($"                {destProp.Name} = new {converter}().Convert(source.{sourceProp.Name})");
+                    }
+                    else
+                    {
+                        // When source is nullable and destination is non-nullable (e.g. DateTime? -> DateTime),
+                        // use ?? default to avoid CS0266 compile error in the object initializer.
+                        var value = $"source.{sourceProp.Name}";
+                        if (sourceProp.IsNullable && !destProp.IsNullable)
+                            value += " ?? default";
 
-                    propsToInitialize.Add($"                {destProp.Name} = {value}");
+                        propsToInitialize.Add($"                {destProp.Name} = {value}");
+                    }
                 }
             }
 
@@ -1593,6 +1918,20 @@ public class ZMapperGenerator : IIncrementalGenerator
         sb.AppendLine($"        public {mapping.DestinationType} Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}({mapping.SourceType} source, {mapping.DestinationType} destination)");
         sb.AppendLine("        {");
 
+        // ConvertUsing mappings don't support map-to-existing — return converted value
+        if (!string.IsNullOrEmpty(mapping.ConvertUsingExpression))
+        {
+            sb.AppendLine($"            return {mapping.ConvertUsingExpression};");
+            sb.AppendLine("        }");
+            return;
+        }
+        if (!string.IsNullOrEmpty(mapping.ConvertUsingConverterType))
+        {
+            sb.AppendLine($"            return new {mapping.ConvertUsingConverterType}().Convert(source);");
+            sb.AppendLine("        }");
+            return;
+        }
+
         // Call BeforeMap hook if present
         if (!string.IsNullOrEmpty(mapping.BeforeMapFieldName))
         {
@@ -1627,6 +1966,110 @@ public class ZMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
+    /// Generate a context-aware Map method that accepts MappingContext.
+    /// Properties with PreCondition are wrapped in if-checks that read from context.
+    /// Properties without PreCondition are mapped normally (same as the no-context version).
+    ///
+    /// For beginners: This method is like the regular Map, but it also receives a "context"
+    /// dictionary. Some properties may only be mapped if certain context values are set.
+    /// </summary>
+    private static void GenerateMapMethodWithContext(StringBuilder sb, MappingModel mapping)
+    {
+        sb.AppendLine();
+        sb.AppendLine($"        public {mapping.DestinationType} Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}({mapping.SourceType} source, ZMapper.MappingContext context)");
+        sb.AppendLine("        {");
+
+        // ConvertUsing shortcut — context is ignored since the entire mapping is replaced
+        if (!string.IsNullOrEmpty(mapping.ConvertUsingExpression))
+        {
+            sb.AppendLine($"            return {mapping.ConvertUsingExpression};");
+            sb.AppendLine("        }");
+            return;
+        }
+        if (!string.IsNullOrEmpty(mapping.ConvertUsingConverterType))
+        {
+            sb.AppendLine($"            return new {mapping.ConvertUsingConverterType}().Convert(source);");
+            sb.AppendLine("        }");
+            return;
+        }
+
+        // ConstructUsing or default construction
+        if (!string.IsNullOrEmpty(mapping.ConstructUsingExpression))
+        {
+            sb.AppendLine($"            var destination = {mapping.ConstructUsingExpression};");
+        }
+        else
+        {
+            sb.AppendLine($"            var destination = new {mapping.DestinationType}();");
+        }
+
+        // BeforeMap hook
+        if (!string.IsNullOrEmpty(mapping.BeforeMapFieldName))
+        {
+            sb.AppendLine($"            {mapping.BeforeMapFieldName}?.Invoke(source, destination);");
+        }
+
+        // Property assignments with PreCondition support
+        foreach (var destProp in mapping.DestinationProperties)
+        {
+            var memberConfig = mapping.MemberConfigurations.FirstOrDefault(
+                c => c.DestinationMember == destProp.Name);
+
+            if (memberConfig?.IsIgnored == true)
+                continue;
+
+            var sourcePropName = memberConfig?.SourceMember ?? destProp.Name;
+            var sourceProp = mapping.SourceProperties.FirstOrDefault(p => p.Name == sourcePropName);
+
+            if (sourceProp == null && string.IsNullOrEmpty(memberConfig?.SourceExpression))
+                continue;
+
+            // PreCondition wraps the assignment in an if-check using context
+            if (!string.IsNullOrEmpty(memberConfig?.PreCondition))
+            {
+                sb.AppendLine($"            if ({memberConfig!.PreCondition})");
+                sb.AppendLine("            {");
+                // Use deeper indent for the property assignment
+                var innerIndent = "                ";
+                if (!string.IsNullOrEmpty(memberConfig.SourceExpression))
+                {
+                    sb.AppendLine($"{innerIndent}destination.{destProp.Name} = {memberConfig.SourceExpression};");
+                }
+                else if (!string.IsNullOrEmpty(memberConfig.MemberConverterTypeName))
+                {
+                    sb.AppendLine($"{innerIndent}destination.{destProp.Name} = new {memberConfig.MemberConverterTypeName}().Convert(source, source.{sourceProp!.Name});");
+                }
+                else if (_typeConverters != null && sourceProp != null && _typeConverters.TryGetValue($"{sourceProp.Type}|{destProp.Type}", out var converter))
+                {
+                    sb.AppendLine($"{innerIndent}destination.{destProp.Name} = new {converter}().Convert(source.{sourceProp.Name});");
+                }
+                else
+                {
+                    if (sourceProp!.IsNullable && !destProp.IsNullable)
+                        sb.AppendLine($"{innerIndent}destination.{destProp.Name} = source.{sourceProp.Name} ?? default;");
+                    else
+                        sb.AppendLine($"{innerIndent}destination.{destProp.Name} = source.{sourceProp.Name};");
+                }
+                sb.AppendLine("            }");
+            }
+            else
+            {
+                // Normal property assignment (same as no-context version)
+                GeneratePropertyAssignment(sb, destProp, sourceProp!, memberConfig);
+            }
+        }
+
+        // AfterMap hook
+        if (!string.IsNullOrEmpty(mapping.AfterMapFieldName))
+        {
+            sb.AppendLine($"            {mapping.AfterMapFieldName}?.Invoke(source, destination);");
+        }
+
+        sb.AppendLine("            return destination;");
+        sb.AppendLine("        }");
+    }
+
+    /// <summary>
     /// Generate a method that maps an array/span of objects using ReadOnlySpan for zero-copy performance.
     /// </summary>
     private static void GenerateMapArrayMethod(StringBuilder sb, MappingModel mapping)
@@ -1637,10 +2080,12 @@ public class ZMapperGenerator : IIncrementalGenerator
 
         sb.AppendLine($"            var destination = new {mapping.DestinationType}[source.Length];");
 
+        // ConvertUsing or hooks require calling the typed Map method (which has the logic)
+        bool hasConvertUsing = !string.IsNullOrEmpty(mapping.ConvertUsingExpression) || !string.IsNullOrEmpty(mapping.ConvertUsingConverterType);
         bool hasHooks = !string.IsNullOrEmpty(mapping.BeforeMapFieldName) || !string.IsNullOrEmpty(mapping.AfterMapFieldName);
         sb.AppendLine("            for (int i = 0; i < source.Length; i++)");
         sb.AppendLine("            {");
-        if (hasHooks)
+        if (hasConvertUsing || hasHooks)
             sb.AppendLine($"                destination[i] = Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(source[i]);");
         else
             sb.AppendLine($"                destination[i] = source[i].To{mapping.DestinationTypeName}();");
@@ -1662,10 +2107,11 @@ public class ZMapperGenerator : IIncrementalGenerator
 
         sb.AppendLine($"            var destination = new List<{mapping.DestinationType}>(source.Count);");
 
+        bool hasConvertUsing = !string.IsNullOrEmpty(mapping.ConvertUsingExpression) || !string.IsNullOrEmpty(mapping.ConvertUsingConverterType);
         bool hasHooks = !string.IsNullOrEmpty(mapping.BeforeMapFieldName) || !string.IsNullOrEmpty(mapping.AfterMapFieldName);
         sb.AppendLine("            for (int i = 0; i < source.Count; i++)");
         sb.AppendLine("            {");
-        if (hasHooks)
+        if (hasConvertUsing || hasHooks)
             sb.AppendLine($"                destination.Add(Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(source[i]));");
         else
             sb.AppendLine($"                destination.Add(source[i].To{mapping.DestinationTypeName}());");
@@ -1692,10 +2138,11 @@ public class ZMapperGenerator : IIncrementalGenerator
 
         sb.AppendLine($"            var destination = new List<{mapping.DestinationType}>();");
 
+        bool hasConvertUsing = !string.IsNullOrEmpty(mapping.ConvertUsingExpression) || !string.IsNullOrEmpty(mapping.ConvertUsingConverterType);
         bool hasHooks = !string.IsNullOrEmpty(mapping.BeforeMapFieldName) || !string.IsNullOrEmpty(mapping.AfterMapFieldName);
         sb.AppendLine("            foreach (var item in source)");
         sb.AppendLine("            {");
-        if (hasHooks)
+        if (hasConvertUsing || hasHooks)
             sb.AppendLine($"                destination.Add(Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(item));");
         else
             sb.AppendLine($"                destination.Add(item.To{mapping.DestinationTypeName}());");
@@ -1725,8 +2172,12 @@ public class ZMapperGenerator : IIncrementalGenerator
         {
             sb.AppendLine($"            if (typeof(TSource) == typeof({mapping.SourceType}) && typeof(TDestination) == typeof({mapping.DestinationType}))");
 
+            // ConvertUsing and hooks require calling the typed Map method (not extension method)
+            // Also avoids naming conflicts when destination is a built-in type (e.g., ToString())
+            bool hasConvertUsing = !string.IsNullOrEmpty(mapping.ConvertUsingExpression) || !string.IsNullOrEmpty(mapping.ConvertUsingConverterType);
+            bool hasConstructUsing = !string.IsNullOrEmpty(mapping.ConstructUsingExpression);
             bool hasHooks = !string.IsNullOrEmpty(mapping.BeforeMapFieldName) || !string.IsNullOrEmpty(mapping.AfterMapFieldName);
-            if (hasHooks)
+            if (hasConvertUsing || hasConstructUsing || hasHooks)
             {
                 sb.AppendLine($"                return (TDestination)(object)Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(({mapping.SourceType})(object)source!);");
             }
@@ -1801,6 +2252,32 @@ public class ZMapperGenerator : IIncrementalGenerator
 
         sb.AppendLine("            throw new NotSupportedException($\"Enumerable mapping from {typeof(TSource).Name} to {typeof(TDestination).Name} is not configured.\");");
         sb.AppendLine("        }");
+
+        // Generate Map<TSource, TDestination>(source, context) — context-aware dispatch
+        // Always generated to satisfy IMapper interface. Routes to context-aware method when available.
+        sb.AppendLine();
+        sb.AppendLine("        public TDestination Map<TSource, TDestination>(TSource source, ZMapper.MappingContext context)");
+        sb.AppendLine("        {");
+
+        foreach (var mapping in model.Mappings)
+        {
+            sb.AppendLine($"            if (typeof(TSource) == typeof({mapping.SourceType}) && typeof(TDestination) == typeof({mapping.DestinationType}))");
+
+            // If this specific mapping has PreCondition, route to context-aware method
+            bool hasPreCondition = mapping.MemberConfigurations.Any(c => !string.IsNullOrEmpty(c.PreCondition));
+            if (hasPreCondition)
+            {
+                sb.AppendLine($"                return (TDestination)(object)Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(({mapping.SourceType})(object)source!, context);");
+            }
+            else
+            {
+                // Fall back to no-context version for mappings without PreCondition
+                sb.AppendLine($"                return (TDestination)(object)Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(({mapping.SourceType})(object)source!);");
+            }
+        }
+
+        sb.AppendLine("            throw new NotSupportedException($\"Mapping from {typeof(TSource).Name} to {typeof(TDestination).Name} is not configured.\");");
+        sb.AppendLine("        }");
     }
 
     // ============================================================================
@@ -1824,7 +2301,7 @@ public class ZMapperGenerator : IIncrementalGenerator
         // File header
         sb.AppendLine("// <auto-generated />");
         sb.AppendLine("#nullable enable");
-        sb.AppendLine("#pragma warning disable CS8601 // Possible null reference assignment in generated mapping code");
+        sb.AppendLine("#pragma warning disable CS8600, CS8601, CS8603, CS8604 // Possible null reference in generated mapping code");
         sb.AppendLine();
 
         // Emit extensions into the ZMapper namespace so users only need 'using ZMapper;'
@@ -1836,17 +2313,75 @@ public class ZMapperGenerator : IIncrementalGenerator
         sb.AppendLine($"public static class {model.ClassName}_Extensions");
         sb.AppendLine("{");
 
+        // Built-in type names that would clash with Object methods if used as extension method names
+        // e.g., .ToString() already exists on all objects, .ToInt32() exists as Convert.ToInt32(), etc.
+        var builtInTypeNames = new HashSet<string>
+        {
+            "String", "Int32", "Int64", "Int16", "Byte", "Boolean", "Double", "Single", "Decimal",
+            "Char", "Object", "UInt32", "UInt64", "UInt16", "SByte", "IntPtr", "UIntPtr"
+        };
+
         foreach (var mapping in model.Mappings)
         {
+            // Skip extension method generation for mappings to built-in types
+            // These would create methods like .ToString() or .ToInt32() that shadow existing members
+            if (builtInTypeNames.Contains(mapping.DestinationTypeName))
+                continue;
+
             sb.AppendLine();
             sb.AppendLine($"    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]");
             sb.AppendLine($"    public static {mapping.DestinationType} To{mapping.DestinationTypeName}(this {mapping.SourceType} source)");
             sb.AppendLine("    {");
 
+            // ConvertUsing lambda — single return expression
+            if (!string.IsNullOrEmpty(mapping.ConvertUsingExpression))
+            {
+                sb.AppendLine($"        return {mapping.ConvertUsingExpression};");
+                sb.AppendLine("    }");
+                continue;
+            }
+
+            // ConvertUsing<TConverter>() — delegate to converter class
+            if (!string.IsNullOrEmpty(mapping.ConvertUsingConverterType))
+            {
+                sb.AppendLine($"        return new {mapping.ConvertUsingConverterType}().Convert(source);");
+                sb.AppendLine("    }");
+                continue;
+            }
+
             var hasInitOnlyProps = mapping.DestinationProperties.Any(p => p.IsInitOnly || p.IsRequired);
             var hasConditions = mapping.MemberConfigurations.Any(c => !string.IsNullOrEmpty(c.Condition));
+            var useConstructUsing = !string.IsNullOrEmpty(mapping.ConstructUsingExpression);
+            // NOTE: Extension methods do NOT invoke BeforeMap/AfterMap hooks because:
+            //   - Profile-pattern hooks live on Mapper class (only generated when profiles exist)
+            //   - CreateMap-pattern hooks live on per-class GeneratedMapper (not visible here)
+            // If hooks are required, use mapper.Map<S,D>() or config.CreateMapper() instead.
 
-            if (hasInitOnlyProps && !hasConditions)
+            if (useConstructUsing)
+            {
+                // ConstructUsing: custom factory, then property-by-property mapping continues
+                sb.AppendLine($"        var destination = {mapping.ConstructUsingExpression};");
+
+                foreach (var destProp in mapping.DestinationProperties)
+                {
+                    var memberConfig = mapping.MemberConfigurations.FirstOrDefault(
+                        c => c.DestinationMember == destProp.Name);
+
+                    if (memberConfig?.IsIgnored == true)
+                        continue;
+
+                    var sourcePropName = memberConfig?.SourceMember ?? destProp.Name;
+                    var sourceProp = mapping.SourceProperties.FirstOrDefault(p => p.Name == sourcePropName);
+
+                    if (sourceProp != null || !string.IsNullOrEmpty(memberConfig?.SourceExpression))
+                    {
+                        GeneratePropertyAssignmentForExtension(sb, destProp, sourceProp!, memberConfig, mapping);
+                    }
+                }
+
+                sb.AppendLine("        return destination;");
+            }
+            else if (hasInitOnlyProps && !hasConditions)
             {
                 sb.AppendLine($"        return new {mapping.DestinationType}");
                 sb.AppendLine("        {");
@@ -1870,13 +2405,26 @@ public class ZMapperGenerator : IIncrementalGenerator
                     }
                     else if (sourceProp != null)
                     {
-                        // When source is nullable and destination is non-nullable (e.g. DateTime? -> DateTime),
-                        // use ?? default to avoid CS0266 compile error in the object initializer.
-                        var value = $"source.{sourceProp.Name}";
-                        if (sourceProp.IsNullable && !destProp.IsNullable)
-                            value += " ?? default";
+                        // Member-level converter
+                        if (!string.IsNullOrEmpty(memberConfig?.MemberConverterTypeName))
+                        {
+                            propsToInitialize.Add($"            {destProp.Name} = new {memberConfig!.MemberConverterTypeName}().Convert(source, source.{sourceProp.Name})");
+                        }
+                        // Global type converter auto-apply (Feature 2 Part B)
+                        else if (_typeConverters != null && _typeConverters.TryGetValue($"{sourceProp.Type}|{destProp.Type}", out var converter))
+                        {
+                            propsToInitialize.Add($"            {destProp.Name} = new {converter}().Convert(source.{sourceProp.Name})");
+                        }
+                        else
+                        {
+                            // When source is nullable and destination is non-nullable (e.g. DateTime? -> DateTime),
+                            // use ?? default to avoid CS0266 compile error in the object initializer.
+                            var value = $"source.{sourceProp.Name}";
+                            if (sourceProp.IsNullable && !destProp.IsNullable)
+                                value += " ?? default";
 
-                        propsToInitialize.Add($"            {destProp.Name} = {value}");
+                            propsToInitialize.Add($"            {destProp.Name} = {value}");
+                        }
                     }
                 }
 
@@ -1940,7 +2488,7 @@ public class ZMapperGenerator : IIncrementalGenerator
 
         sb.AppendLine("// <auto-generated />");
         sb.AppendLine("#nullable enable");
-        sb.AppendLine("#pragma warning disable CS8601 // Possible null reference assignment in generated mapping code");
+        sb.AppendLine("#pragma warning disable CS8600, CS8601, CS8603, CS8604 // Possible null reference in generated mapping code");
         sb.AppendLine();
         sb.AppendLine("using System;");
         sb.AppendLine("using System.Collections.Generic;");
@@ -1973,7 +2521,7 @@ public class ZMapperGenerator : IIncrementalGenerator
             sb.AppendLine();
         }
 
-        // Generate 5 methods for each mapping
+        // Generate 5 methods for each mapping (+ context-aware overload if PreCondition is used)
         foreach (var mapping in mappings)
         {
             GenerateMapMethod(sb, mapping);
@@ -1981,6 +2529,11 @@ public class ZMapperGenerator : IIncrementalGenerator
             GenerateMapArrayMethod(sb, mapping);
             GenerateMapListMethod(sb, mapping);
             GenerateMapListEnumerableMethod(sb, mapping);
+
+            if (mapping.MemberConfigurations.Any(c => !string.IsNullOrEmpty(c.PreCondition)))
+            {
+                GenerateMapMethodWithContext(sb, mapping);
+            }
         }
 
         // Generate generic dispatch methods
@@ -2041,6 +2594,20 @@ public class ZMapperGenerator : IIncrementalGenerator
         sb.AppendLine("    {");
         sb.AppendLine("        return new Mapper();");
         sb.AppendLine("    }");
+        sb.AppendLine();
+
+        // Module initializer: register MapperFactory on MapperConfiguration at assembly load time.
+        // This runs before any user code, so config.CreateMapper() always works even if
+        // the Mapper class hasn't been referenced yet (static ctor would not fire otherwise).
+        sb.AppendLine("    /// <summary>");
+        sb.AppendLine("    /// Module initializer — registers the factory so MapperConfiguration.CreateMapper() works.");
+        sb.AppendLine("    /// Runs automatically when the assembly is loaded.");
+        sb.AppendLine("    /// </summary>");
+        sb.AppendLine("    [System.Runtime.CompilerServices.ModuleInitializer]");
+        sb.AppendLine("    internal static void RegisterFactory()");
+        sb.AppendLine("    {");
+        sb.AppendLine("        MapperConfiguration.MapperFactory = config => Mapper.Create(config);");
+        sb.AppendLine("    }");
 
         sb.AppendLine("}");
 
@@ -2069,7 +2636,7 @@ public class ZMapperGenerator : IIncrementalGenerator
 
         sb.AppendLine("// <auto-generated />");
         sb.AppendLine("#nullable enable");
-        sb.AppendLine("#pragma warning disable CS8601 // Possible null reference assignment in generated mapping code");
+        sb.AppendLine("#pragma warning disable CS8600, CS8601, CS8603, CS8604 // Possible null reference in generated mapping code");
         sb.AppendLine();
         sb.AppendLine("using Microsoft.Extensions.DependencyInjection;");
         // AddZMapper() lives in the ZMapper namespace for easy discoverability
@@ -2208,6 +2775,24 @@ internal class MappingModel
     /// <summary>If true, non-matching destination properties are silently skipped.
     /// If false (default), a compile-time diagnostic is emitted for unmapped properties.</summary>
     public bool IgnoreNonExisting { get; set; }
+
+    /// <summary>Controls which side is validated for property coverage.
+    /// "Destination" (default) = warn on unmapped dest props.
+    /// "Source" = warn on unused source props.
+    /// "None" = no validation warnings.</summary>
+    public string MemberListValidation { get; set; } = "Destination";
+
+    /// <summary>Lambda expression body for ConvertUsing(src => ...).
+    /// When set, property-by-property mapping is replaced with this expression.</summary>
+    public string? ConvertUsingExpression { get; set; }
+
+    /// <summary>Fully qualified type name for ConvertUsing&lt;TConverter&gt;().
+    /// When set, the generator emits new TConverter().Convert(source) instead of property mapping.</summary>
+    public string? ConvertUsingConverterType { get; set; }
+
+    /// <summary>Lambda expression body for ConstructUsing(src => ...).
+    /// When set, replaces 'new TDestination()' with this factory expression.</summary>
+    public string? ConstructUsingExpression { get; set; }
 }
 
 /// <summary>
@@ -2265,4 +2850,13 @@ internal class MemberConfigModel
 
     /// <summary>Condition expression for conditional mapping (e.g., "src => src.Value != null")</summary>
     public string? Condition { get; set; }
+
+    /// <summary>PreCondition expression with MappingContext access.
+    /// e.g., "context.GetOrDefault&lt;bool&gt;(\"MapNested\", true)"
+    /// Only used in context-aware Map overload.</summary>
+    public string? PreCondition { get; set; }
+
+    /// <summary>Fully qualified type name of a member-level converter (IMemberConverter).
+    /// When set with SourceMember, generates: new TConverter().Convert(source, source.SourceProp)</summary>
+    public string? MemberConverterTypeName { get; set; }
 }

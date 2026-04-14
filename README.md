@@ -27,7 +27,7 @@
 - **Hooks** - `BeforeMap` and `AfterMap` callbacks for custom pre/post-processing logic
 - **Conditional Mapping** - Map properties only when conditions are met (`When()`)
 - **PreCondition with Context** - Runtime-parameterized conditions via `MappingContext` (`PreCondition((src, ctx) => ...)`)
-- **ConvertUsing** - Whole-object conversion via lambda (`ConvertUsing(s => s.Id)`) or ITypeConverter class
+- **ConvertUsing** - Whole-object conversion via lambda (`ConvertUsing(s => s.Id)`) or `ITypeConverter<S,D>` class; registered type converters **auto-apply** to matching properties across all mappings
 - **ConstructUsing** - Custom factory for destination construction (`ConstructUsing(s => new Dest(s.Id))`)
 - **Member ConvertUsing + Source Property** - Per-member converter with explicit source (`ConvertUsing<T>(s => s.OtherProp)`)
 - **MemberList Validation** - `MemberList.Source`, `.Destination`, or `.None` for compile-time coverage checks
@@ -425,6 +425,21 @@ public class DateTimeOffsetToDateTimeConverter : ITypeConverter<DateTimeOffset, 
 }
 ```
 
+**Automatic application of ITypeConverter across all mappings:**
+
+Once you register `CreateMap<S, D>().ConvertUsing<TConverter>()`, the converter is **automatically applied** to any property of that (source type, dest type) pair in any other mapping — no per-member configuration needed:
+
+```csharp
+// Register once:
+config.CreateMap<DateTimeOffset, DateTime>().ConvertUsing<DateTimeOffsetToDateTimeConverter>();
+
+// Now any property with (DateTimeOffset → DateTime) uses the converter:
+config.CreateMap<EventSourceDto, EventEntity>();
+// Generated: destination.CreatedAt = new DateTimeOffsetToDateTimeConverter().Convert(source.CreatedAt);
+```
+
+This matches AutoMapper's global type converter behavior and is ideal for cross-cutting concerns like `DateTimeOffset ⇄ DateTime` or currency units.
+
 ### ConstructUsing - Custom Factory
 
 Use when the destination type has no parameterless constructor. Property mapping still applies after construction:
@@ -591,6 +606,8 @@ var user = dto.ToUser();  // Clean, discoverable, inlined by JIT
 ```
 
 These methods are marked with `[MethodImpl(MethodImplOptions.AggressiveInlining)]` for maximum performance.
+
+> **Limitation:** Extension methods do **not** invoke `BeforeMap` / `AfterMap` hooks (they bypass the runtime hook infrastructure for zero overhead). If you rely on hooks, call `mapper.Map<S, D>()` or `config.CreateMapper().Map<S, D>()` instead. Built-in destination types (`int`, `string`, `DateTime`, etc.) don't get extension methods at all to avoid shadowing `Object.ToString()` / `Convert.ToInt32()` — use `mapper.Map<S, D>()` for those.
 
 ## Supported Types
 

@@ -101,10 +101,38 @@ public class PersonInputDto
 }
 
 // ============================================================================
+// Test models for ConstructUsing with standalone lambda parameter (Bug #2 fix)
+// ============================================================================
+
+/// <summary>A simple source model for standalone-parameter ConstructUsing test.</summary>
+public class WidgetInput
+{
+    public int Id { get; set; }
+    public string Label { get; set; } = string.Empty;
+}
+
+/// <summary>A class created via a factory method that takes the entire source object.</summary>
+public class WidgetOutput
+{
+    public int Id { get; set; }
+    public string Label { get; set; } = string.Empty;
+}
+
+// ============================================================================
 // Mapper configuration for all ConvertUsing and ConstructUsing tests
 // ============================================================================
 public partial class ConvertUsingMapperConfig
 {
+    /// <summary>
+    /// Factory method that takes the entire source and creates the destination.
+    /// Used to test ConstructUsing where the lambda parameter is passed as-is (no dot access).
+    /// e.g., .ConstructUsing(input => BuildWidget(input))
+    /// </summary>
+    public static WidgetOutput BuildWidget(WidgetInput input)
+    {
+        return new WidgetOutput { Id = input.Id * 10, Label = $"Widget-{input.Label}" };
+    }
+
     public static IMapper CreateMapper()
     {
         var config = new MapperConfiguration();
@@ -123,6 +151,16 @@ public partial class ConvertUsingMapperConfig
         config.CreateMap<PersonInputDto, ImmutablePerson>()
             .ConstructUsing(s => new ImmutablePerson(s.Id, s.Name))
             .IgnoreNonExisting(); // Id and Name are read-only, no setter
+
+        // Bug #2 fix: ConstructUsing with standalone parameter (no dot access).
+        // The lambda parameter "input" is passed directly to BuildWidget(input),
+        // NOT as input.Something. Previously this would leak the lambda param name
+        // into the generated code as an undefined variable.
+        // Uses fully qualified namespace so the generated extension method can resolve it.
+        config.CreateMap<WidgetInput, WidgetOutput>()
+            .ConstructUsing(input => ZMapper.Tests.ConvertUsingMapperConfig.BuildWidget(input))
+            .ForMember(d => d.Id, opt => opt.Ignore())
+            .ForMember(d => d.Label, opt => opt.Ignore());
 
         return CreateGeneratedMapper();
     }
@@ -256,5 +294,23 @@ public class ConvertUsingTests
         result.Id.Should().Be(3);
         result.Name.Should().Be("Bob");
         result.Age.Should().Be(25);
+    }
+
+    // --- Bug #2 fix: ConstructUsing with standalone lambda parameter ---
+
+    [Fact]
+    public void ConstructUsing_StandaloneLambdaParam_ShouldReplaceWithSource()
+    {
+        // Arrange — tests that ConstructUsing(input => BuildWidget(input))
+        // correctly replaces "input" → "source" in generated code.
+        // Previously, the lambda param name leaked as an undefined variable.
+        var widget = new WidgetInput { Id = 5, Label = "Test" };
+
+        // Act
+        var result = _mapper.Map<WidgetInput, WidgetOutput>(widget);
+
+        // Assert — BuildWidget multiplies Id by 10 and prepends "Widget-"
+        result.Id.Should().Be(50);
+        result.Label.Should().Be("Widget-Test");
     }
 }

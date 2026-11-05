@@ -443,6 +443,20 @@ public class ZMapperGenerator : IIncrementalGenerator
             MemberConfigurations = ExtractMemberConfigurations(call, semanticModel)
         };
 
+        // Detect collection-to-collection mapping (e.g., CreateMap<List<A>, List<B>>())
+        // When both source and dest are collection types, we generate iteration code
+        // instead of treating them as regular objects with properties like Capacity/this[].
+        if (IsCollectionType(sourceType) && IsCollectionType(destType))
+        {
+            mapping.IsCollectionMapping = true;
+            mapping.SourceElementType = ExtractCollectionElementType(sourceType);
+            mapping.DestinationElementType = ExtractCollectionElementType(destType);
+            mapping.SourceElementTypeName = mapping.SourceElementType != null
+                ? GetSimpleTypeName(mapping.SourceElementType) : sourceType.Name;
+            mapping.DestinationElementTypeName = mapping.DestinationElementType != null
+                ? GetSimpleTypeName(mapping.DestinationElementType) : destType.Name;
+        }
+
         // Extract BeforeMap/AfterMap hooks + ConvertUsing/ConstructUsing
         ExtractHooks(call, mapping, semanticModel);
 
@@ -549,7 +563,7 @@ public class ZMapperGenerator : IIncrementalGenerator
         if (beforeMapCall != null)
         {
             // Generate a unique field name for this hook
-            mapping.BeforeMapFieldName = $"_beforeMap_{mapping.SourceTypeName}To{mapping.DestinationTypeName}";
+            mapping.BeforeMapFieldName = $"_beforeMap_{GetSafeMethodTypeName(mapping, true)}To{GetSafeMethodTypeName(mapping, false)}";
         }
 
         // Look for AfterMap() calls
@@ -561,7 +575,7 @@ public class ZMapperGenerator : IIncrementalGenerator
         if (afterMapCall != null)
         {
             // Generate a unique field name for this hook
-            mapping.AfterMapFieldName = $"_afterMap_{mapping.SourceTypeName}To{mapping.DestinationTypeName}";
+            mapping.AfterMapFieldName = $"_afterMap_{GetSafeMethodTypeName(mapping, true)}To{GetSafeMethodTypeName(mapping, false)}";
         }
 
         // Look for IgnoreNonExisting() call - suppresses unmapped property diagnostics
@@ -614,8 +628,9 @@ public class ZMapperGenerator : IIncrementalGenerator
                 {
                     var parameterName = lambda.Parameter.Identifier.Text;
                     var expressionBody = lambda.Body.ToString();
-                    // Replace lambda parameter with "source" for generated code context
-                    mapping.ConvertUsingExpression = expressionBody.Replace(parameterName + ".", "source.");
+                    // Replace lambda parameter with "source" as a whole word.
+                    // Uses whole-word replacement so "dto" in "dtoMapper" is NOT replaced.
+                    mapping.ConvertUsingExpression = ReplaceLambdaParameter(expressionBody, parameterName);
                 }
             }
         }
@@ -633,8 +648,9 @@ public class ZMapperGenerator : IIncrementalGenerator
             {
                 var parameterName = lambda.Parameter.Identifier.Text;
                 var expressionBody = lambda.Body.ToString();
-                // Replace lambda parameter with "source" for generated code context
-                expressionBody = expressionBody.Replace(parameterName + ".", "source.");
+                // Replace lambda parameter with "source" as a whole word.
+                // This handles both property access (param.Prop) and standalone usage (Foo(param)).
+                expressionBody = ReplaceLambdaParameter(expressionBody, parameterName);
                 // Replace short destination type name with fully qualified name
                 // so the expression works in the ZMapper namespace (extension methods)
                 expressionBody = expressionBody.Replace(
@@ -789,6 +805,10 @@ public class ZMapperGenerator : IIncrementalGenerator
 
                 // Must not be static (static properties belong to the class, not instances)
                 !p.IsStatic &&
+
+                // Must not be an indexer (this[]) — indexers are IPropertySymbol but not real properties.
+                // Without this check, List<T>.this[] would generate invalid code like destination.this[] = ...
+                !p.IsIndexer &&
 
                 // Source properties: need a getter (we READ from them — includes computed props like TotalPrice)
                 // Destination properties: need a setter or be required (we WRITE to them)
@@ -1548,6 +1568,76 @@ public class ZMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
+    /// Replace a lambda parameter name with "source" as a whole word in an expression body.
+    /// Handles both property access (param.Prop) and standalone usage (Foo(param)).
+    ///
+    /// For beginners: When we extract a lambda like "dto => Foo(dto)", we need to replace
+    /// "dto" with "source" so the generated code becomes "Foo(source)".
+    /// Simple Replace("dto.", "source.") would miss the standalone "dto" usage.
+    /// This method treats identifier boundaries (letters, digits, underscore) as word chars
+    /// and only replaces when the parameter appears as a complete identifier.
+    /// </summary>
+    private static string ReplaceLambdaParameter(string expressionBody, string parameterName, string replacement = "source")
+    {
+        var result = new StringBuilder(expressionBody.Length);
+        int i = 0;
+        while (i < expressionBody.Length)
+        {
+            // Try to match parameterName at position i
+            if (i + parameterName.Length <= expressionBody.Length &&
+                expressionBody.Substring(i, parameterName.Length) == parameterName)
+            {
+                // Check that it's a whole-word boundary:
+                // char before must NOT be a letter/digit/underscore
+                bool boundaryBefore = (i == 0) || !IsIdentifierChar(expressionBody[i - 1]);
+                // char after must NOT be a letter/digit/underscore
+                bool boundaryAfter = (i + parameterName.Length >= expressionBody.Length) ||
+                                     !IsIdentifierChar(expressionBody[i + parameterName.Length]);
+
+                if (boundaryBefore && boundaryAfter)
+                {
+                    result.Append(replacement);
+                    i += parameterName.Length;
+                    continue;
+                }
+            }
+            result.Append(expressionBody[i]);
+            i++;
+        }
+        return result.ToString();
+    }
+
+    /// <summary>
+    /// Check if a character is a valid C# identifier character (letter, digit, or underscore).
+    /// Used for whole-word boundary detection in lambda parameter replacement.
+    /// </summary>
+    private static bool IsIdentifierChar(char c)
+    {
+        return char.IsLetterOrDigit(c) || c == '_';
+    }
+
+    /// <summary>
+    /// Get a safe method name suffix for a type, including generic element type for collections.
+    /// For regular types: "UserDto" → "UserDto"
+    /// For generic collections: "List&lt;Cluster&gt;" → "ListOfCluster"
+    ///
+    /// For beginners: Method names can't contain &lt; &gt; characters, so we convert
+    /// "List&lt;Cluster&gt;" into "ListOfCluster" to make a valid C# method name.
+    /// </summary>
+    private static string GetSafeMethodTypeName(MappingModel mapping, bool isSource)
+    {
+        if (mapping.IsCollectionMapping)
+        {
+            // For collection mappings, include element type to avoid duplicate method names.
+            // e.g., Map_ListOfCluster_To_ListOfListDto instead of Map_List_To_List
+            var outerName = isSource ? mapping.SourceTypeName : mapping.DestinationTypeName;
+            var elementName = isSource ? mapping.SourceElementTypeName : mapping.DestinationElementTypeName;
+            return $"{outerName}Of{elementName}";
+        }
+        return isSource ? mapping.SourceTypeName : mapping.DestinationTypeName;
+    }
+
+    /// <summary>
     /// Generate property assignment code based on property types.
     /// Handles three cases:
     /// 1. Collection of complex objects: List&lt;CustomerDto&gt; -> List&lt;Customer&gt;
@@ -1743,6 +1833,50 @@ public class ZMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
+    /// Generate the body of a collection-to-collection mapping method.
+    /// Instead of mapping properties, iterates over source elements and maps each one
+    /// to the destination element type using the element's extension method.
+    ///
+    /// For beginners: When someone writes CreateMap&lt;List&lt;A&gt;, List&lt;B&gt;&gt;(),
+    /// we can't treat List as a regular object. Instead, we loop through each item in the
+    /// source list, convert it to the destination element type, and add it to a new list.
+    /// </summary>
+    private static void GenerateCollectionMappingBody(StringBuilder sb, MappingModel mapping, string indent, string resultVarName = "destination")
+    {
+        // If ConstructUsing is specified, use it directly (user controls the entire conversion)
+        if (!string.IsNullOrEmpty(mapping.ConstructUsingExpression))
+        {
+            sb.AppendLine($"{indent}return {mapping.ConstructUsingExpression};");
+            return;
+        }
+
+        var srcElem = mapping.SourceElementType ?? "object";
+        var destElem = mapping.DestinationElementType ?? "object";
+        var destElemName = mapping.DestinationElementTypeName ?? "Object";
+
+        // Create result list with pre-allocated capacity from source count.
+        // Variable name is configurable to avoid CS0136 when 'destination' is already a parameter
+        // (e.g., in map-to-existing methods: Map_X_To_Y(source, destination)).
+        sb.AppendLine($"{indent}var {resultVarName} = new System.Collections.Generic.List<{destElem}>(source.Count);");
+        sb.AppendLine($"{indent}for (int i = 0; i < source.Count; i++)");
+        sb.AppendLine($"{indent}{{");
+
+        // If source and destination element types are the same, just copy
+        if (srcElem == destElem)
+        {
+            sb.AppendLine($"{indent}    {resultVarName}.Add(source[i]);");
+        }
+        else
+        {
+            // Map each element using its extension method (e.g., source[i].ToListDto())
+            sb.AppendLine($"{indent}    {resultVarName}.Add(source[i] != null ? source[i].To{destElemName}() : default);");
+        }
+
+        sb.AppendLine($"{indent}}}");
+        sb.AppendLine($"{indent}return {resultVarName};");
+    }
+
+    /// <summary>
     /// Generate a method that maps from source to NEW destination object.
     ///
     /// For beginners: This writes code that creates a new object and copies properties.
@@ -1751,7 +1885,7 @@ public class ZMapperGenerator : IIncrementalGenerator
     {
         sb.AppendLine();
         // Method signature: public User Map_UserDto_To_User(UserDto source)
-        sb.AppendLine($"        public {mapping.DestinationType} Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}({mapping.SourceType} source)");
+        sb.AppendLine($"        public {mapping.DestinationType} Map_{GetSafeMethodTypeName(mapping, true)}_To_{GetSafeMethodTypeName(mapping, false)}({mapping.SourceType} source)");
         sb.AppendLine("        {");
 
         // SHORTCUT: ConvertUsing lambda — replace entire mapping with a single expression
@@ -1768,6 +1902,15 @@ public class ZMapperGenerator : IIncrementalGenerator
         if (!string.IsNullOrEmpty(mapping.ConvertUsingConverterType))
         {
             sb.AppendLine($"            return new {mapping.ConvertUsingConverterType}().Convert(source);");
+            sb.AppendLine("        }");
+            return;
+        }
+
+        // COLLECTION-TO-COLLECTION: When both source and dest are collections (e.g., List<A> -> List<B>),
+        // generate iteration code instead of trying to map properties like Capacity/this[].
+        if (mapping.IsCollectionMapping)
+        {
+            GenerateCollectionMappingBody(sb, mapping, "            ");
             sb.AppendLine("        }");
             return;
         }
@@ -1915,7 +2058,7 @@ public class ZMapperGenerator : IIncrementalGenerator
     private static void GenerateMapToExistingMethod(StringBuilder sb, MappingModel mapping)
     {
         sb.AppendLine();
-        sb.AppendLine($"        public {mapping.DestinationType} Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}({mapping.SourceType} source, {mapping.DestinationType} destination)");
+        sb.AppendLine($"        public {mapping.DestinationType} Map_{GetSafeMethodTypeName(mapping, true)}_To_{GetSafeMethodTypeName(mapping, false)}({mapping.SourceType} source, {mapping.DestinationType} destination)");
         sb.AppendLine("        {");
 
         // ConvertUsing mappings don't support map-to-existing — return converted value
@@ -1928,6 +2071,15 @@ public class ZMapperGenerator : IIncrementalGenerator
         if (!string.IsNullOrEmpty(mapping.ConvertUsingConverterType))
         {
             sb.AppendLine($"            return new {mapping.ConvertUsingConverterType}().Convert(source);");
+            sb.AppendLine("        }");
+            return;
+        }
+
+        // COLLECTION-TO-COLLECTION: Map-to-existing for collections — generate iteration code.
+        // Uses "result" as variable name because "destination" is already a method parameter.
+        if (mapping.IsCollectionMapping)
+        {
+            GenerateCollectionMappingBody(sb, mapping, "            ", "result");
             sb.AppendLine("        }");
             return;
         }
@@ -1976,7 +2128,7 @@ public class ZMapperGenerator : IIncrementalGenerator
     private static void GenerateMapMethodWithContext(StringBuilder sb, MappingModel mapping)
     {
         sb.AppendLine();
-        sb.AppendLine($"        public {mapping.DestinationType} Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}({mapping.SourceType} source, ZMapper.MappingContext context)");
+        sb.AppendLine($"        public {mapping.DestinationType} Map_{GetSafeMethodTypeName(mapping, true)}_To_{GetSafeMethodTypeName(mapping, false)}({mapping.SourceType} source, ZMapper.MappingContext context)");
         sb.AppendLine("        {");
 
         // ConvertUsing shortcut — context is ignored since the entire mapping is replaced
@@ -1989,6 +2141,14 @@ public class ZMapperGenerator : IIncrementalGenerator
         if (!string.IsNullOrEmpty(mapping.ConvertUsingConverterType))
         {
             sb.AppendLine($"            return new {mapping.ConvertUsingConverterType}().Convert(source);");
+            sb.AppendLine("        }");
+            return;
+        }
+
+        // COLLECTION-TO-COLLECTION: context-aware method still uses iteration for collections
+        if (mapping.IsCollectionMapping)
+        {
+            GenerateCollectionMappingBody(sb, mapping, "            ");
             sb.AppendLine("        }");
             return;
         }
@@ -2075,7 +2235,7 @@ public class ZMapperGenerator : IIncrementalGenerator
     private static void GenerateMapArrayMethod(StringBuilder sb, MappingModel mapping)
     {
         sb.AppendLine();
-        sb.AppendLine($"        public {mapping.DestinationType}[] MapArray_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(System.ReadOnlySpan<{mapping.SourceType}> source)");
+        sb.AppendLine($"        public {mapping.DestinationType}[] MapArray_{GetSafeMethodTypeName(mapping, true)}_To_{GetSafeMethodTypeName(mapping, false)}(System.ReadOnlySpan<{mapping.SourceType}> source)");
         sb.AppendLine("        {");
 
         sb.AppendLine($"            var destination = new {mapping.DestinationType}[source.Length];");
@@ -2086,9 +2246,9 @@ public class ZMapperGenerator : IIncrementalGenerator
         sb.AppendLine("            for (int i = 0; i < source.Length; i++)");
         sb.AppendLine("            {");
         if (hasConvertUsing || hasHooks)
-            sb.AppendLine($"                destination[i] = Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(source[i]);");
+            sb.AppendLine($"                destination[i] = Map_{GetSafeMethodTypeName(mapping, true)}_To_{GetSafeMethodTypeName(mapping, false)}(source[i]);");
         else
-            sb.AppendLine($"                destination[i] = source[i].To{mapping.DestinationTypeName}();");
+            sb.AppendLine($"                destination[i] = source[i].To{(mapping.IsCollectionMapping ? GetSafeMethodTypeName(mapping, false) : mapping.DestinationTypeName)}();");
         sb.AppendLine("            }");
         sb.AppendLine();
 
@@ -2102,7 +2262,7 @@ public class ZMapperGenerator : IIncrementalGenerator
     private static void GenerateMapListMethod(StringBuilder sb, MappingModel mapping)
     {
         sb.AppendLine();
-        sb.AppendLine($"        public List<{mapping.DestinationType}> MapList_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(System.Collections.Generic.IReadOnlyList<{mapping.SourceType}> source)");
+        sb.AppendLine($"        public List<{mapping.DestinationType}> MapList_{GetSafeMethodTypeName(mapping, true)}_To_{GetSafeMethodTypeName(mapping, false)}(System.Collections.Generic.IReadOnlyList<{mapping.SourceType}> source)");
         sb.AppendLine("        {");
 
         sb.AppendLine($"            var destination = new List<{mapping.DestinationType}>(source.Count);");
@@ -2112,9 +2272,9 @@ public class ZMapperGenerator : IIncrementalGenerator
         sb.AppendLine("            for (int i = 0; i < source.Count; i++)");
         sb.AppendLine("            {");
         if (hasConvertUsing || hasHooks)
-            sb.AppendLine($"                destination.Add(Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(source[i]));");
+            sb.AppendLine($"                destination.Add(Map_{GetSafeMethodTypeName(mapping, true)}_To_{GetSafeMethodTypeName(mapping, false)}(source[i]));");
         else
-            sb.AppendLine($"                destination.Add(source[i].To{mapping.DestinationTypeName}());");
+            sb.AppendLine($"                destination.Add(source[i].To{(mapping.IsCollectionMapping ? GetSafeMethodTypeName(mapping, false) : mapping.DestinationTypeName)}());");
         sb.AppendLine("            }");
 
         sb.AppendLine("            return destination;");
@@ -2133,7 +2293,7 @@ public class ZMapperGenerator : IIncrementalGenerator
     private static void GenerateMapListEnumerableMethod(StringBuilder sb, MappingModel mapping)
     {
         sb.AppendLine();
-        sb.AppendLine($"        public List<{mapping.DestinationType}> MapList_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}_Enumerable(System.Collections.Generic.IEnumerable<{mapping.SourceType}> source)");
+        sb.AppendLine($"        public List<{mapping.DestinationType}> MapList_{GetSafeMethodTypeName(mapping, true)}_To_{GetSafeMethodTypeName(mapping, false)}_Enumerable(System.Collections.Generic.IEnumerable<{mapping.SourceType}> source)");
         sb.AppendLine("        {");
 
         sb.AppendLine($"            var destination = new List<{mapping.DestinationType}>();");
@@ -2143,9 +2303,9 @@ public class ZMapperGenerator : IIncrementalGenerator
         sb.AppendLine("            foreach (var item in source)");
         sb.AppendLine("            {");
         if (hasConvertUsing || hasHooks)
-            sb.AppendLine($"                destination.Add(Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(item));");
+            sb.AppendLine($"                destination.Add(Map_{GetSafeMethodTypeName(mapping, true)}_To_{GetSafeMethodTypeName(mapping, false)}(item));");
         else
-            sb.AppendLine($"                destination.Add(item.To{mapping.DestinationTypeName}());");
+            sb.AppendLine($"                destination.Add(item.To{(mapping.IsCollectionMapping ? GetSafeMethodTypeName(mapping, false) : mapping.DestinationTypeName)}());");
         sb.AppendLine("            }");
 
         sb.AppendLine("            return destination;");
@@ -2179,11 +2339,11 @@ public class ZMapperGenerator : IIncrementalGenerator
             bool hasHooks = !string.IsNullOrEmpty(mapping.BeforeMapFieldName) || !string.IsNullOrEmpty(mapping.AfterMapFieldName);
             if (hasConvertUsing || hasConstructUsing || hasHooks)
             {
-                sb.AppendLine($"                return (TDestination)(object)Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(({mapping.SourceType})(object)source!);");
+                sb.AppendLine($"                return (TDestination)(object)Map_{GetSafeMethodTypeName(mapping, true)}_To_{GetSafeMethodTypeName(mapping, false)}(({mapping.SourceType})(object)source!);");
             }
             else
             {
-                sb.AppendLine($"                return (TDestination)(object)(({mapping.SourceType})(object)source!).To{mapping.DestinationTypeName}();");
+                sb.AppendLine($"                return (TDestination)(object)(({mapping.SourceType})(object)source!).To{(mapping.IsCollectionMapping ? GetSafeMethodTypeName(mapping, false) : mapping.DestinationTypeName)}();");
             }
         }
 
@@ -2198,7 +2358,7 @@ public class ZMapperGenerator : IIncrementalGenerator
         foreach (var mapping in model.Mappings)
         {
             sb.AppendLine($"            if (typeof(TSource) == typeof({mapping.SourceType}) && typeof(TDestination) == typeof({mapping.DestinationType}))");
-            sb.AppendLine($"                return (TDestination)(object)Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(({mapping.SourceType})(object)source!, ({mapping.DestinationType})(object)destination!);");
+            sb.AppendLine($"                return (TDestination)(object)Map_{GetSafeMethodTypeName(mapping, true)}_To_{GetSafeMethodTypeName(mapping, false)}(({mapping.SourceType})(object)source!, ({mapping.DestinationType})(object)destination!);");
         }
 
         sb.AppendLine("            throw new NotSupportedException($\"Mapping from {typeof(TSource).Name} to {typeof(TDestination).Name} is not configured.\");");
@@ -2230,11 +2390,11 @@ public class ZMapperGenerator : IIncrementalGenerator
             bool hasHooksDispatch = !string.IsNullOrEmpty(mapping.BeforeMapFieldName) || !string.IsNullOrEmpty(mapping.AfterMapFieldName);
             if (hasConvertUsingDispatch || hasConstructUsingDispatch || hasHooksDispatch)
             {
-                sb.AppendLine($"                    result[i] = Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(({mapping.SourceType})(object)source[i]!);");
+                sb.AppendLine($"                    result[i] = Map_{GetSafeMethodTypeName(mapping, true)}_To_{GetSafeMethodTypeName(mapping, false)}(({mapping.SourceType})(object)source[i]!);");
             }
             else
             {
-                sb.AppendLine($"                    result[i] = (({mapping.SourceType})(object)source[i]!).To{mapping.DestinationTypeName}();");
+                sb.AppendLine($"                    result[i] = (({mapping.SourceType})(object)source[i]!).To{(mapping.IsCollectionMapping ? GetSafeMethodTypeName(mapping, false) : mapping.DestinationTypeName)}();");
             }
             sb.AppendLine("                }");
             sb.AppendLine($"                return (TDestination[])(object)result;");
@@ -2252,7 +2412,7 @@ public class ZMapperGenerator : IIncrementalGenerator
         foreach (var mapping in model.Mappings)
         {
             sb.AppendLine($"            if (typeof(TSource) == typeof({mapping.SourceType}) && typeof(TDestination) == typeof({mapping.DestinationType}))");
-            sb.AppendLine($"                return (List<TDestination>)(object)MapList_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}((System.Collections.Generic.IReadOnlyList<{mapping.SourceType}>)(object)source);");
+            sb.AppendLine($"                return (List<TDestination>)(object)MapList_{GetSafeMethodTypeName(mapping, true)}_To_{GetSafeMethodTypeName(mapping, false)}((System.Collections.Generic.IReadOnlyList<{mapping.SourceType}>)(object)source);");
         }
 
         sb.AppendLine("            throw new NotSupportedException($\"List mapping from {typeof(TSource).Name} to {typeof(TDestination).Name} is not configured.\");");
@@ -2266,7 +2426,7 @@ public class ZMapperGenerator : IIncrementalGenerator
         foreach (var mapping in model.Mappings)
         {
             sb.AppendLine($"            if (typeof(TSource) == typeof({mapping.SourceType}) && typeof(TDestination) == typeof({mapping.DestinationType}))");
-            sb.AppendLine($"                return (List<TDestination>)(object)MapList_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}_Enumerable((System.Collections.Generic.IEnumerable<{mapping.SourceType}>)(object)source);");
+            sb.AppendLine($"                return (List<TDestination>)(object)MapList_{GetSafeMethodTypeName(mapping, true)}_To_{GetSafeMethodTypeName(mapping, false)}_Enumerable((System.Collections.Generic.IEnumerable<{mapping.SourceType}>)(object)source);");
         }
 
         sb.AppendLine("            throw new NotSupportedException($\"Enumerable mapping from {typeof(TSource).Name} to {typeof(TDestination).Name} is not configured.\");");
@@ -2286,12 +2446,12 @@ public class ZMapperGenerator : IIncrementalGenerator
             bool hasPreCondition = mapping.MemberConfigurations.Any(c => !string.IsNullOrEmpty(c.PreCondition));
             if (hasPreCondition)
             {
-                sb.AppendLine($"                return (TDestination)(object)Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(({mapping.SourceType})(object)source!, context);");
+                sb.AppendLine($"                return (TDestination)(object)Map_{GetSafeMethodTypeName(mapping, true)}_To_{GetSafeMethodTypeName(mapping, false)}(({mapping.SourceType})(object)source!, context);");
             }
             else
             {
                 // Fall back to no-context version for mappings without PreCondition
-                sb.AppendLine($"                return (TDestination)(object)Map_{mapping.SourceTypeName}_To_{mapping.DestinationTypeName}(({mapping.SourceType})(object)source!);");
+                sb.AppendLine($"                return (TDestination)(object)Map_{GetSafeMethodTypeName(mapping, true)}_To_{GetSafeMethodTypeName(mapping, false)}(({mapping.SourceType})(object)source!);");
             }
         }
 
@@ -2347,9 +2507,15 @@ public class ZMapperGenerator : IIncrementalGenerator
             if (builtInTypeNames.Contains(mapping.DestinationTypeName))
                 continue;
 
+            // For collection mappings, use element-inclusive name (e.g., ToListOfListDto)
+            // For regular mappings, use the destination type name (e.g., ToUser)
+            var extensionMethodName = mapping.IsCollectionMapping
+                ? $"To{GetSafeMethodTypeName(mapping, false)}"
+                : $"To{mapping.DestinationTypeName}";
+
             sb.AppendLine();
             sb.AppendLine($"    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]");
-            sb.AppendLine($"    public static {mapping.DestinationType} To{mapping.DestinationTypeName}(this {mapping.SourceType} source)");
+            sb.AppendLine($"    public static {mapping.DestinationType} {extensionMethodName}(this {mapping.SourceType} source)");
             sb.AppendLine("    {");
 
             // ConvertUsing lambda — single return expression
@@ -2364,6 +2530,14 @@ public class ZMapperGenerator : IIncrementalGenerator
             if (!string.IsNullOrEmpty(mapping.ConvertUsingConverterType))
             {
                 sb.AppendLine($"        return new {mapping.ConvertUsingConverterType}().Convert(source);");
+                sb.AppendLine("    }");
+                continue;
+            }
+
+            // COLLECTION-TO-COLLECTION: generate iteration code for extension method
+            if (mapping.IsCollectionMapping)
+            {
+                GenerateCollectionMappingBody(sb, mapping, "        ");
                 sb.AppendLine("    }");
                 continue;
             }
@@ -2812,6 +2986,26 @@ internal class MappingModel
     /// <summary>Lambda expression body for ConstructUsing(src => ...).
     /// When set, replaces 'new TDestination()' with this factory expression.</summary>
     public string? ConstructUsingExpression { get; set; }
+
+    /// <summary>True when both source and destination are collection types (e.g., List&lt;A&gt; -> List&lt;B&gt;).
+    /// When set, the generator emits iteration code instead of property-by-property mapping.</summary>
+    public bool IsCollectionMapping { get; set; }
+
+    /// <summary>Element type of the source collection (e.g., "MyApp.Cluster" for List&lt;Cluster&gt;).
+    /// Only set when IsCollectionMapping is true.</summary>
+    public string? SourceElementType { get; set; }
+
+    /// <summary>Simple name of the source element type (e.g., "Cluster").
+    /// Only set when IsCollectionMapping is true.</summary>
+    public string? SourceElementTypeName { get; set; }
+
+    /// <summary>Element type of the destination collection (e.g., "MyApp.ListDto" for List&lt;ListDto&gt;).
+    /// Only set when IsCollectionMapping is true.</summary>
+    public string? DestinationElementType { get; set; }
+
+    /// <summary>Simple name of the destination element type (e.g., "ListDto").
+    /// Only set when IsCollectionMapping is true.</summary>
+    public string? DestinationElementTypeName { get; set; }
 }
 
 /// <summary>
